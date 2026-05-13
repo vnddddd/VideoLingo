@@ -179,10 +179,10 @@ def page_setting():
 
         runtime = st.selectbox(
             t("WhisperX Runtime"),
-            options=["local", "cloud", "elevenlabs"],
-            index=["local", "cloud", "elevenlabs"].index(load_key("whisper.runtime")),
+            options=["local", "cloud", "elevenlabs", "soniox"],
+            index=["local", "cloud", "elevenlabs", "soniox"].index(load_key("whisper.runtime")),
             help=t(
-                "Local runtime requires >8GB GPU, cloud runtime requires 302ai API key, elevenlabs runtime requires ElevenLabs API key"
+                "Local runtime requires >8GB GPU, cloud runtime requires 302ai API key, elevenlabs runtime requires ElevenLabs API key, soniox runtime requires Soniox API key (stt-async-v4 model)"
             ),
         )
         if runtime != load_key("whisper.runtime"):
@@ -192,6 +192,18 @@ def page_setting():
             config_input(t("WhisperX 302ai API"), "whisper.whisperX_302_api_key")
         if runtime == "elevenlabs":
             config_input(("ElevenLabs API"), "whisper.elevenlabs_api_key")
+        if runtime == "soniox":
+            config_input(t("Soniox API"), "whisper.soniox_api_key")
+            soniox_diarize = st.toggle(
+                t("Soniox Speaker Diarization"),
+                value=load_key("whisper.soniox_diarize"),
+                help=t(
+                    "Enable speaker diarization (adds speaker labels to transcript). Increases API cost."
+                ),
+            )
+            if soniox_diarize != load_key("whisper.soniox_diarize"):
+                update_key("whisper.soniox_diarize", soniox_diarize)
+                st.rerun()
 
         with c2:
             target_language = st.text_input(
