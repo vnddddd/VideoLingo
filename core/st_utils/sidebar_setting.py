@@ -249,6 +249,7 @@ def page_setting():
             "custom_tts",
             "sf_cosyvoice2",
             "f5tts",
+            "mimo_tts",
         ]
         select_tts = st.selectbox(
             t("TTS Method"),
@@ -334,6 +335,54 @@ def page_setting():
 
         elif select_tts == "f5tts":
             config_input("302ai API", "f5tts.302_api")
+
+        elif select_tts == "mimo_tts":
+            config_input(t("Xiaomi MiMo Base URL"), "mimo_tts.base_url",
+                         help=t("Default SGP cluster; alt: token-plan-cn.xiaomimimo.com/v1"))
+            config_input(t("Xiaomi MiMo API Key"), "mimo_tts.api_key",
+                         help=t("Subscription token, form 'tp-xxx'"))
+            mimo_model_options = [
+                "mimo-v2.5-tts",
+                "mimo-v2.5-tts-voicedesign",
+                "mimo-v2.5-tts-voiceclone",
+            ]
+            mimo_cur_model = load_key("mimo_tts.model")
+            sel_mimo_model = st.selectbox(
+                t("MiMo TTS Model"),
+                options=mimo_model_options,
+                index=mimo_model_options.index(mimo_cur_model)
+                if mimo_cur_model in mimo_model_options
+                else 0,
+                help=t("preset voice / natural language voice prompt / reference audio clone"),
+            )
+            if sel_mimo_model != mimo_cur_model:
+                update_key("mimo_tts.model", sel_mimo_model)
+                st.rerun()
+            if sel_mimo_model == "mimo-v2.5-tts":
+                mimo_voices = [
+                    "Chloe", "Sophia", "Hannah",
+                    "Jacob", "Owen", "Ethan",
+                    "冰糖", "茉莉", "可乐",
+                ]
+                mimo_cur_voice = load_key("mimo_tts.voice")
+                sel_mimo_voice = st.selectbox(
+                    t("MiMo Preset Voice"),
+                    options=mimo_voices,
+                    index=mimo_voices.index(mimo_cur_voice)
+                    if mimo_cur_voice in mimo_voices
+                    else 0,
+                )
+                if sel_mimo_voice != mimo_cur_voice:
+                    update_key("mimo_tts.voice", sel_mimo_voice)
+                    st.rerun()
+            elif sel_mimo_model == "mimo-v2.5-tts-voicedesign":
+                config_input(
+                    t("MiMo Voice Description"),
+                    "mimo_tts.voice_description",
+                    help=t("Natural-language description of the voice (any language)"),
+                )
+            elif sel_mimo_model == "mimo-v2.5-tts-voiceclone":
+                st.info(t("Voice cloning uses reference audio at output/audio/refers/{number}.wav (auto-extracted by VideoLingo)"))
 
 
 def check_api():
