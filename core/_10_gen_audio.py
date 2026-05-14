@@ -4,6 +4,7 @@ import shutil
 import subprocess
 from typing import Tuple
 
+import numpy as np
 import pandas as pd
 from pydub import AudioSegment
 from rich.console import Console
@@ -223,6 +224,22 @@ def gen_audio() -> None:
     
     # 🔄 Step4: Merge audio chunks
     tasks_df = merge_chunks(tasks_df)
+    
+    # 🧹 Step4b: Normalize numpy scalars to builtin Python types before writing xlsx.
+    # numpy 2.x repr of np.float64(x) is "np.float64(x)" (not plain "x"), which
+    # breaks eval(cell) in _11_merge_audio.py if numpy is not imported there.
+    # Cleaning at the source keeps xlsx cells portable (e.g. "[[0.24, 1.41]]").
+    def _to_builtin(v):
+        if isinstance(v, list):
+            return [_to_builtin(x) for x in v]
+        if isinstance(v, tuple):
+            return tuple(_to_builtin(x) for x in v)
+        if isinstance(v, np.generic):
+            return v.item()
+        return v
+    for _col in tasks_df.columns:
+        if tasks_df[_col].dtype == object:
+            tasks_df[_col] = tasks_df[_col].apply(_to_builtin)
     
     # 💾 Step5: Save results
     tasks_df.to_excel(_8_1_AUDIO_TASK, index=False)

@@ -1,5 +1,6 @@
 import os
 import pandas as pd
+import numpy as np  # noqa: F401  # required by eval() for cells containing np.float64(...) repr (numpy 2.x)
 import subprocess
 from pydub import AudioSegment
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
