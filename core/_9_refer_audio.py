@@ -24,7 +24,16 @@ def extract_audio(audio_data, sr, start_time, end_time, out_file):
     sf.write(out_file, audio_data[start:end], sr)
 
 def extract_refer_audio_main():
-    demucs_audio() #!!! in case demucs not run
+    # Respect the demucs switch: when disabled (e.g. using a remote ASR like
+    # Soniox / ElevenLabs / 302 cloud), skip demucs entirely so we don't load
+    # torch/CUDA on a machine that may not have a usable GPU, and fall back to
+    # the raw mixed audio as the reference source.
+    if load_key("demucs"):
+        demucs_audio() #!!! in case demucs not run
+        audio_source = _VOCAL_AUDIO_FILE
+    else:
+        audio_source = _RAW_AUDIO_FILE
+
     if os.path.exists(os.path.join(_AUDIO_SEGS_DIR, '1.wav')):
         rprint(Panel("Audio segments already exist, skipping extraction", title="Info", border_style="blue"))
         return
@@ -34,7 +43,7 @@ def extract_refer_audio_main():
     
     # Read task file and audio data
     df = pd.read_excel(_8_1_AUDIO_TASK)
-    data, sr = sf.read(_VOCAL_AUDIO_FILE)
+    data, sr = sf.read(audio_source)
     
     with Progress(
         SpinnerColumn(),
