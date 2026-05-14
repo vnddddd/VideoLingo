@@ -81,10 +81,13 @@ def merge_subtitles_to_video():
         ).encode('utf-8'),
     ]
 
-    ffmpeg_gpu = load_key("ffmpeg_gpu")
-    if ffmpeg_gpu:
-        rprint("[bold green]will use GPU acceleration.[/bold green]")
-        ffmpeg_cmd.extend(['-c:v', 'h264_nvenc'])
+    # Hardware-accelerated encoder selection (cpu/nvenc/qsv/amf/auto)
+    # Honors new config fields: ffmpeg_hwaccel / ffmpeg_preset / ffmpeg_quality
+    # Falls back to legacy ffmpeg_gpu=true (=nvenc) for backward compatibility.
+    from core.utils.ffmpeg_utils import get_video_encoder_args
+    encoder_args, encoder_name = get_video_encoder_args()
+    rprint(f"[bold green]Video encoder: {encoder_name}[/bold green]")
+    ffmpeg_cmd.extend(encoder_args)
     ffmpeg_cmd.extend(['-y', OUTPUT_VIDEO])
 
     rprint("🎬 Start merging subtitles to video...")

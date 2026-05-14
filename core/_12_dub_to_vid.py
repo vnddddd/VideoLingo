@@ -73,12 +73,14 @@ def merge_video_audio():
         f'[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=3[a]'
     ]
 
-    if load_key("ffmpeg_gpu"):
-        rprint("[bold green]Using GPU acceleration...[/bold green]")
-        cmd.extend(['-map', '[v]', '-map', '[a]', '-c:v', 'h264_nvenc'])
-    else:
-        cmd.extend(['-map', '[v]', '-map', '[a]'])
-    
+    # Hardware-accelerated encoder selection (cpu/nvenc/qsv/amf/auto)
+    # See core/utils/ffmpeg_utils.py for supported config fields.
+    from core.utils.ffmpeg_utils import get_video_encoder_args
+    encoder_args, encoder_name = get_video_encoder_args()
+    rprint(f"[bold green]Video encoder: {encoder_name}[/bold green]")
+    cmd.extend(['-map', '[v]', '-map', '[a]'])
+    cmd.extend(encoder_args)
+
     cmd.extend(['-c:a', 'aac', '-b:a', '96k', DUB_VIDEO])
     
     subprocess.run(cmd)
