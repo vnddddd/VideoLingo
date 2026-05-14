@@ -6,17 +6,19 @@ acceleration by setting `ffmpeg_hwaccel` in config.yaml.
 
 Config fields (all optional, sensible defaults applied):
     ffmpeg_hwaccel: cpu | nvenc | qsv | amf | auto
-        - cpu  : libx264 (default, most compatible)
+        - cpu  : libx264 (most compatible, force software encoding)
         - nvenc: NVIDIA GPUs with NVENC (GTX 10xx+ except GT 1030/MX series)
         - qsv  : Intel iGPU Quick Sync Video (Gen 7+ / Haswell+)
         - amf  : AMD GPUs (Polaris+) on Windows
-        - auto : probe at runtime, prefer nvenc > qsv > amf > cpu
+        - auto : probe at runtime, prefer nvenc > qsv > amf > cpu (DEFAULT)
     ffmpeg_preset: ultrafast..veryslow (default: medium)
     ffmpeg_quality: 18..28 CRF/CQ value (default: 23)
 
 Backward compatibility:
     Legacy field `ffmpeg_gpu: true` is treated as `ffmpeg_hwaccel: nvenc`
     when the new field is not set. This keeps old configs working.
+    When neither field is set, falls back to 'auto' so fresh installs
+    on GPU servers get hardware acceleration out of the box.
 """
 import subprocess
 from core.utils.config_utils import load_key
@@ -85,8 +87,9 @@ def get_video_encoder_args():
     quality = str(_safe_load('ffmpeg_quality', 23))
 
     # Legacy compat: ffmpeg_gpu: true => nvenc (old behavior)
+    # When neither field is set: 'auto' so it works on any hardware out of the box
     if not hwaccel:
-        hwaccel = 'nvenc' if _safe_load('ffmpeg_gpu', False) else 'cpu'
+        hwaccel = 'nvenc' if _safe_load('ffmpeg_gpu', False) else 'auto'
 
     if hwaccel == 'auto':
         hwaccel = detect_best_encoder()
