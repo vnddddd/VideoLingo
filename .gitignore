@@ -173,3 +173,14 @@ runtime/
 dev/
 installer_files/
 logs/
+
+# secrets backups & local artifacts (防止误推真 key 或私人内容)
+config.yaml.bak*
+config.*.bak
+*.bak_before_*
+output_bak_*/
+*_~*
+.venv/
+.idea/
+.vscode/
+*.session.json
