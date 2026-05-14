@@ -1,3 +1,4 @@
+import os
 import platform
 import subprocess
 
@@ -32,7 +33,25 @@ def merge_video_audio():
     """Merge video and audio, and reduce video volume"""
     VIDEO_FILE = find_video_files()
     background_file = _BACKGROUND_AUDIO_FILE
-    
+
+    # Fallback: when demucs is disabled (remote ASR/TTS users), background.mp3
+    # is never generated. Fall back to the raw mixed audio so the ffmpeg amix
+    # stage still has a valid second input. amix naturally attenuates each
+    # input by ~50%, so the original audio sits softly under the new dub.
+    if not os.path.exists(background_file):
+        if os.path.exists(_RAW_AUDIO_FILE):
+            rprint(
+                f"[yellow][WARN] {background_file} not found "
+                f"(demucs disabled). Falling back to {_RAW_AUDIO_FILE} "
+                f"as the background track.[/yellow]"
+            )
+            background_file = _RAW_AUDIO_FILE
+        else:
+            raise FileNotFoundError(
+                f"Neither {background_file} nor {_RAW_AUDIO_FILE} exists; "
+                f"cannot merge dub video without a background audio source."
+            )
+
     if not load_key("burn_subtitles"):
         rprint("[bold yellow]Warning: A 0-second black video will be generated as a placeholder as subtitles are not burned in.[/bold yellow]")
 
@@ -82,8 +101,18 @@ def merge_video_audio():
     cmd.extend(encoder_args)
 
     cmd.extend(['-c:a', 'aac', '-b:a', '96k', DUB_VIDEO])
-    
-    subprocess.run(cmd)
+
+    # Run ffmpeg and verify it actually succeeded. Previously the return code
+    # was ignored, so a silent ffmpeg failure (e.g. missing background.mp3)
+    # would still print "successfully merged" and leave the user with no
+    # output_dub.mp4 file. Now we fail loudly.
+    result = subprocess.run(cmd)
+    if result.returncode != 0 or not os.path.exists(DUB_VIDEO):
+        raise RuntimeError(
+            f"ffmpeg failed to produce {DUB_VIDEO} "
+            f"(return code {result.returncode}). "
+            f"Check the ffmpeg output above for the underlying error."
+        )
     rprint(f"[bold green]Video and audio successfully merged into {DUB_VIDEO}[/bold green]")
 
 if __name__ == '__main__':
