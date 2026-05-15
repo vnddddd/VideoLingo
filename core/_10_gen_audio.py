@@ -8,6 +8,7 @@ from typing import Tuple
 import numpy as np
 import pandas as pd
 from pydub import AudioSegment
+from pydub.silence import detect_nonsilent
 from rich.console import Console
 from rich.progress import Progress
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -23,6 +24,16 @@ TEMP_FILE_TEMPLATE = f"{_AUDIO_TMP_DIR}/{{}}_temp.wav"
 OUTPUT_FILE_TEMPLATE = f"{_AUDIO_SEGS_DIR}/{{}}.wav"
 WARMUP_SIZE = 5
 MIN_SEGMENT_DURATION_MS = 10
+TTS_SILENCE_TRIM_SEEK_STEP_MS = 10
+TTS_SILENCE_TRIM_MIN_SILENCE_MS = 80
+TTS_SILENCE_TRIM_LEADING_KEEP_MS = 80
+TTS_SILENCE_TRIM_TRAILING_KEEP_MS = 120
+TTS_SILENCE_TRIM_MIN_TOTAL_MS = 80
+TTS_SILENCE_TRIM_MAX_LEADING_MS = 800
+TTS_SILENCE_TRIM_MAX_TRAILING_MS = 1000
+TTS_SILENCE_TRIM_NOISE_MARGIN_DB = 12.0
+TTS_SILENCE_TRIM_MIN_THRESHOLD_DBFS = -55.0
+TTS_SILENCE_TRIM_MAX_THRESHOLD_DBFS = -35.0
 
 def _wav_has_audio_frames(audio_file: str) -> bool:
     """Return True only when a WAV file contains at least one audio frame."""
@@ -37,6 +48,82 @@ def _ensure_non_empty_wav(audio_file: str) -> None:
     if not _wav_has_audio_frames(audio_file):
         AudioSegment.silent(duration=MIN_SEGMENT_DURATION_MS).set_frame_rate(16000).set_channels(1).export(audio_file, format="wav")
         rprint(f"[yellow]Empty audio segment replaced with {MIN_SEGMENT_DURATION_MS}ms silence: {audio_file}[/yellow]")
+
+
+
+def _estimate_tts_silence_threshold(audio: AudioSegment) -> float:
+    """Estimate a conservative silence threshold from short-frame loudness."""
+    if len(audio) <= 0:
+        return TTS_SILENCE_TRIM_MIN_THRESHOLD_DBFS
+
+    frame_dbfs = []
+    for start_ms in range(0, len(audio), TTS_SILENCE_TRIM_SEEK_STEP_MS):
+        frame = audio[start_ms:start_ms + TTS_SILENCE_TRIM_SEEK_STEP_MS]
+        dbfs = frame.dBFS
+        frame_dbfs.append(-100.0 if dbfs == float("-inf") else dbfs)
+
+    if not frame_dbfs:
+        return TTS_SILENCE_TRIM_MIN_THRESHOLD_DBFS
+
+    sorted_dbfs = sorted(frame_dbfs)
+    quiet_count = max(1, int(len(sorted_dbfs) * 0.1))
+    noise_floor = sum(sorted_dbfs[:quiet_count]) / quiet_count
+    threshold = noise_floor + TTS_SILENCE_TRIM_NOISE_MARGIN_DB
+    return max(
+        TTS_SILENCE_TRIM_MIN_THRESHOLD_DBFS,
+        min(TTS_SILENCE_TRIM_MAX_THRESHOLD_DBFS, threshold),
+    )
+
+def trim_tts_leading_trailing_silence(audio_file: str) -> bool:
+    """Trim obvious leading/trailing silence from a generated TTS WAV in place.
+
+    The trimming is intentionally conservative: it uses a dynamic dBFS
+    threshold, requires a short non-silent run, keeps padding around speech,
+    caps how much can be removed at either edge, skips tiny changes, and never
+    rewrites all-silent audio. Returns True only when the file was rewritten.
+    """
+    audio = AudioSegment.from_wav(audio_file)
+    if len(audio) <= MIN_SEGMENT_DURATION_MS:
+        return False
+
+    silence_thresh = _estimate_tts_silence_threshold(audio)
+    nonsilent_ranges = detect_nonsilent(
+        audio,
+        min_silence_len=TTS_SILENCE_TRIM_MIN_SILENCE_MS,
+        silence_thresh=silence_thresh,
+        seek_step=TTS_SILENCE_TRIM_SEEK_STEP_MS,
+    )
+    if not nonsilent_ranges:
+        return False
+
+    first_voice_ms = nonsilent_ranges[0][0]
+    last_voice_ms = nonsilent_ranges[-1][1]
+
+    start_ms = max(0, first_voice_ms - TTS_SILENCE_TRIM_LEADING_KEEP_MS)
+    end_ms = min(len(audio), last_voice_ms + TTS_SILENCE_TRIM_TRAILING_KEEP_MS)
+
+    # Guard against cutting too much if a very soft syllable was misclassified.
+    start_ms = min(start_ms, TTS_SILENCE_TRIM_MAX_LEADING_MS)
+    end_ms = max(end_ms, len(audio) - TTS_SILENCE_TRIM_MAX_TRAILING_MS)
+
+    if end_ms <= start_ms:
+        return False
+
+    trimmed_total_ms = start_ms + (len(audio) - end_ms)
+    if trimmed_total_ms < TTS_SILENCE_TRIM_MIN_TOTAL_MS:
+        return False
+
+    trimmed_audio = audio[start_ms:end_ms]
+    if len(trimmed_audio) <= 0:
+        return False
+
+    trimmed_audio.export(audio_file, format="wav")
+    _ensure_non_empty_wav(audio_file)
+    rprint(
+        f"[dim]Trimmed TTS silence: {audio_file} "
+        f"-{trimmed_total_ms}ms (threshold {silence_thresh:.1f} dBFS)[/dim]"
+    )
+    return True
 
 def parse_df_srt_time(time_str: str) -> float:
     """Convert SRT time format to seconds"""
@@ -91,6 +178,7 @@ def process_row(row: pd.Series, tasks_df: pd.DataFrame) -> Tuple[int, float]:
         temp_file = TEMP_FILE_TEMPLATE.format(f"{number}_{line_index}")
         tts_main(line, temp_file, number, tasks_df)
         _ensure_non_empty_wav(temp_file)
+        trim_tts_leading_trailing_silence(temp_file)
         real_dur += get_audio_duration(temp_file)
     return number, real_dur
 
