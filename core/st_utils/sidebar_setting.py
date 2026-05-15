@@ -13,6 +13,24 @@ def config_input(label, key, help=None, placeholder=None):
     return val
 
 
+def _positive_int_config(key, fallback_key=None, default=1):
+    """Read a positive integer config value with optional backward-compatible fallback."""
+    try:
+        value = load_key(key)
+    except Exception:
+        if fallback_key is None:
+            value = default
+        else:
+            try:
+                value = load_key(fallback_key)
+            except Exception:
+                value = default
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
 def _fetch_model_list(base_url, api_key):
     """Fetch available models from OpenAI-compatible /v1/models endpoint."""
     if not api_key or not base_url:
@@ -155,6 +173,17 @@ def page_setting():
         if llm_support_json != load_key("api.llm_support_json"):
             update_key("api.llm_support_json", llm_support_json)
             st.rerun()
+
+        llm_max_workers = st.number_input(
+            t("LLM Concurrency"),
+            min_value=1,
+            step=1,
+            value=_positive_int_config("api.max_workers", fallback_key="max_workers", default=1),
+            help=t("Maximum concurrent LLM requests for translation and subtitle splitting."),
+        )
+        if int(llm_max_workers) != _positive_int_config("api.max_workers", fallback_key="max_workers", default=1):
+            update_key("api.max_workers", int(llm_max_workers))
+            st.rerun()
     with st.expander(t("Subtitles Settings"), expanded=True):
         c1, c2 = st.columns(2)
         with c1:
@@ -204,6 +233,20 @@ def page_setting():
             if soniox_diarize != load_key("whisper.soniox_diarize"):
                 update_key("whisper.soniox_diarize", soniox_diarize)
                 st.rerun()
+
+        asr_max_workers = st.number_input(
+            t("ASR Clip Concurrency"),
+            min_value=1,
+            max_value=16,
+            value=int(load_key("whisper.max_workers")),
+            step=1,
+            help=t(
+                "Number of ASR audio clips to transcribe concurrently. Local WhisperX is forced to 1 to protect GPU/VRAM."
+            ),
+        )
+        if int(asr_max_workers) != int(load_key("whisper.max_workers")):
+            update_key("whisper.max_workers", int(asr_max_workers))
+            st.rerun()
 
         with c2:
             target_language = st.text_input(
@@ -258,6 +301,17 @@ def page_setting():
         )
         if select_tts != load_key("tts_method"):
             update_key("tts_method", select_tts)
+            st.rerun()
+
+        tts_max_workers = st.number_input(
+            t("TTS Concurrency"),
+            min_value=1,
+            step=1,
+            value=_positive_int_config("tts_max_workers", fallback_key="max_workers", default=1),
+            help=t("Maximum concurrent TTS generation requests. GPT-SoVITS is forced to 1 to avoid reference-audio/state conflicts."),
+        )
+        if int(tts_max_workers) != _positive_int_config("tts_max_workers", fallback_key="max_workers", default=1):
+            update_key("tts_max_workers", int(tts_max_workers))
             st.rerun()
 
         # sub settings for each tts method

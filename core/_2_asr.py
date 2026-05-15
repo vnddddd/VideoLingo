@@ -1,8 +1,23 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from core.utils import *
 from core.asr_backend.demucs_vl import demucs_audio
 from core.asr_backend.audio_preprocess import process_transcription, convert_video_to_audio, split_audio, save_results, normalize_audio_volume
 from core._1_ytdlp import find_video_files
 from core.utils.models import *
+
+
+def _load_asr_max_workers(runtime: str, segments_count: int) -> int:
+    """Return safe ASR worker count; keep local WhisperX serial to protect GPU/VRAM."""
+    if runtime == "local":
+        return 1
+    try:
+        max_workers = int(load_key("whisper.max_workers") or 1)
+    except Exception:
+        max_workers = 1
+    max_workers = max(1, max_workers)
+    return min(max_workers, max(1, segments_count))
+
 
 @check_file_exists(_2_CLEANED_CHUNKS)
 def transcribe():
@@ -21,7 +36,6 @@ def transcribe():
     segments = split_audio(_RAW_AUDIO_FILE)
     
     # 4. Transcribe audio by clips
-    all_results = []
     runtime = load_key("whisper.runtime")
     if runtime == "local":
         from core.asr_backend.whisperX_local import transcribe_audio as ts
@@ -35,10 +49,26 @@ def transcribe():
     elif runtime == "soniox":
         from core.asr_backend.soniox_asr import transcribe_audio_soniox as ts
         rprint("[cyan]🎤 Transcribing audio with Soniox API...[/cyan]")
+    else:
+        raise ValueError(f"Unsupported whisper runtime: {runtime}")
 
-    for start, end in segments:
-        result = ts(_RAW_AUDIO_FILE, vocal_audio, start, end)
-        all_results.append(result)
+    max_workers = _load_asr_max_workers(runtime, len(segments))
+    rprint(f"[cyan]🎤 ASR clip concurrency: {max_workers}/{len(segments)}[/cyan]")
+
+    if max_workers == 1:
+        all_results = [ts(_RAW_AUDIO_FILE, vocal_audio, start, end) for start, end in segments]
+    else:
+        all_results = [None] * len(segments)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_index = {
+                executor.submit(ts, _RAW_AUDIO_FILE, vocal_audio, start, end): idx
+                for idx, (start, end) in enumerate(segments)
+            }
+            for future in as_completed(future_to_index):
+                idx = future_to_index[future]
+                start, end = segments[idx]
+                all_results[idx] = future.result()
+                rprint(f"[green]✓ ASR segment {idx + 1}/{len(segments)} completed ({start:.2f}s-{end:.2f}s)[/green]")
     
     # 5. Combine results
     combined_result = {'segments': []}

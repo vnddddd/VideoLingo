@@ -66,6 +66,28 @@ def load_timeout(key, default):
         return default
 
     return int(timeout) if timeout.is_integer() else timeout
+def load_positive_int(key, fallback_key=None, default=1):
+    """Read a positive integer config value, optionally falling back to another key."""
+    try:
+        value = load_key(key)
+    except KeyError:
+        if fallback_key is None:
+            value = default
+        else:
+            try:
+                value = load_key(fallback_key)
+            except KeyError:
+                value = default
+
+    if value is None or value == '':
+        value = default
+
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = int(default)
+
+    return max(1, number)
         
 # basic utils
 def get_joiner(language):

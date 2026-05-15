@@ -2,9 +2,9 @@
 try:
     from .ask_gpt import ask_gpt
     from .decorator import except_handler, check_file_exists
-    from .config_utils import load_key, update_key, get_joiner, load_timeout
+    from .config_utils import load_key, update_key, get_joiner, load_timeout, load_positive_int
     from rich import print as rprint
 except ImportError:
     pass
 
-__all__ = ["ask_gpt", "except_handler", "check_file_exists", "load_key", "update_key", "rprint", "get_joiner", "load_timeout"]
+__all__ = ["ask_gpt", "except_handler", "check_file_exists", "load_key", "update_key", "rprint", "get_joiner", "load_timeout", "load_positive_int"]

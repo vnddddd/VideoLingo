@@ -18,7 +18,6 @@ def transcribe_audio_302(raw_audio_path: str, vocal_audio_path: str, start: floa
             return json.load(f)
         
     WHISPER_LANGUAGE = load_key("whisper.language")
-    update_key("whisper.language", WHISPER_LANGUAGE)
     url = "https://api.302.ai/302/whisperx"
     
     y, sr = librosa.load(vocal_audio_path, sr=16000)
