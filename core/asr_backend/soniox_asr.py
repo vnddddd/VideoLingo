@@ -17,7 +17,8 @@ from core.asr_backend.soniox_format import soniox_to_whisper
 BASE_URL = "https://api.soniox.com"
 MODEL = "stt-async-v4"
 POLL_INTERVAL_SEC = 2.0
-POLL_TIMEOUT_SEC = 600  # 10 min upper bound for one chunk
+def _poll_timeout_sec():
+    return load_timeout("asr_poll_total", 600)  # 10 min default upper bound for one chunk
 
 # ----------------------------------------
 # Low-level helpers (one helper per HTTP call)
@@ -34,7 +35,7 @@ def _upload_file(api_key, audio_path):
             f"{BASE_URL}/v1/files",
             headers=_auth_headers(api_key),
             files=files,
-            timeout=180,
+            timeout=load_timeout("asr_upload", 180),
         )
     r.raise_for_status()
     return r.json()["id"]
@@ -52,19 +53,20 @@ def _create_transcription(api_key, file_id, language=None, diarize=False):
         f"{BASE_URL}/v1/transcriptions",
         headers=headers,
         json=body,
-        timeout=30,
+        timeout=load_timeout("asr_request", 30),
     )
     r.raise_for_status()
     return r.json()["id"]
 
 def _poll_transcription(api_key, tx_id):
     """GET /v1/transcriptions/{id} until status in (completed, error). Returns final body on completed."""
-    deadline = time.time() + POLL_TIMEOUT_SEC
+    poll_timeout_sec = _poll_timeout_sec()
+    deadline = time.time() + poll_timeout_sec
     while time.time() < deadline:
         r = requests.get(
             f"{BASE_URL}/v1/transcriptions/{tx_id}",
             headers=_auth_headers(api_key),
-            timeout=30,
+            timeout=load_timeout("asr_request", 30),
         )
         r.raise_for_status()
         data = r.json()
@@ -78,14 +80,14 @@ def _poll_transcription(api_key, tx_id):
             )
         # queued | processing -> keep waiting
         time.sleep(POLL_INTERVAL_SEC)
-    raise TimeoutError(f"Soniox transcription timeout after {POLL_TIMEOUT_SEC}s (tx_id={tx_id})")
+    raise TimeoutError(f"Soniox transcription timeout after {poll_timeout_sec}s (tx_id={tx_id})")
 
 def _fetch_transcript(api_key, tx_id):
     """GET /v1/transcriptions/{id}/transcript -> {text, tokens, ...}"""
     r = requests.get(
         f"{BASE_URL}/v1/transcriptions/{tx_id}/transcript",
         headers=_auth_headers(api_key),
-        timeout=60,
+        timeout=load_timeout("asr_fetch", 60),
     )
     r.raise_for_status()
     return r.json()
@@ -95,12 +97,12 @@ def _best_effort_delete(api_key, tx_id, file_id):
     headers = _auth_headers(api_key)
     if tx_id:
         try:
-            requests.delete(f"{BASE_URL}/v1/transcriptions/{tx_id}", headers=headers, timeout=30)
+            requests.delete(f"{BASE_URL}/v1/transcriptions/{tx_id}", headers=headers, timeout=load_timeout("asr_cleanup", 30))
         except Exception:
             pass
     if file_id:
         try:
-            requests.delete(f"{BASE_URL}/v1/files/{file_id}", headers=headers, timeout=30)
+            requests.delete(f"{BASE_URL}/v1/files/{file_id}", headers=headers, timeout=load_timeout("asr_cleanup", 30))
         except Exception:
             pass
 
@@ -184,7 +186,7 @@ def transcribe_audio_soniox(raw_audio_path, vocal_audio_path, start=None, end=No
             tx_id = _create_transcription(api_key, file_id, language=language, diarize=diarize)
             rprint(f"[green]    ✓ transcription_id={tx_id}[/green]")
 
-            rprint(f"[cyan]⏳ [3/4] Polling status (interval={POLL_INTERVAL_SEC}s, timeout={POLL_TIMEOUT_SEC}s) ...[/cyan]")
+            rprint(f"[cyan]⏳ [3/4] Polling status (interval={POLL_INTERVAL_SEC}s, timeout={_poll_timeout_sec()}s) ...[/cyan]")
             _poll_transcription(api_key, tx_id)
             rprint(f"[green]    ✓ completed in {time.time()-t0:.2f}s[/green]")
 

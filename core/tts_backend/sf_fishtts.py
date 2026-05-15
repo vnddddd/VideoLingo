@@ -42,7 +42,7 @@ def siliconflow_fish_tts(text, save_path, mode="preset", voice_id=None, ref_audi
         }
     else: raise ValueError("Invalid mode")
 
-    response = requests.post(API_URL_SPEECH, json=payload, headers=headers)
+    response = requests.post(API_URL_SPEECH, json=payload, headers=headers, timeout=load_timeout("tts", 60))
     if response.status_code == 200:
         wav_file_path = Path(save_path).with_suffix('.wav')
         wav_file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -78,7 +78,7 @@ def create_custom_voice(audio_path, text, custom_name=None):
     }
     
     rprint(f"[yellow]🚀 Sending request to create voice...")
-    response = requests.post(API_URL_VOICE, json=payload, headers={"Authorization": f'Bearer {load_key["sf_fish_tts"]["api_key"]}', "Content-Type": "application/json"})
+    response = requests.post(API_URL_VOICE, json=payload, headers={"Authorization": f'Bearer {load_key["sf_fish_tts"]["api_key"]}', "Content-Type": "application/json"}, timeout=load_timeout("tts", 60))
     response_json = response.json()
     
     if response.status_code == 200:

@@ -25,7 +25,7 @@ def openai_tts(text, save_path):
     speech_file_path = Path(save_path)
     speech_file_path.parent.mkdir(parents=True, exist_ok=True)
     
-    response = requests.post(BASE_URL, headers=headers, data=payload)
+    response = requests.post(BASE_URL, headers=headers, data=payload, timeout=load_timeout("tts", 60))
     
     if response.status_code == 200:
         with open(speech_file_path, 'wb') as f:

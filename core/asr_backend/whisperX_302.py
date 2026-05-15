@@ -42,7 +42,7 @@ def transcribe_audio_302(raw_audio_path: str, vocal_audio_path: str, start: floa
     start_time = time.time()
     rprint(f"[cyan]🎤 Transcribing audio with language:  <{WHISPER_LANGUAGE}> ...[/cyan]")
     headers = {'Authorization': f'Bearer {load_key("whisper.whisperX_302_api_key")}'}
-    response = requests.request("POST", url, headers=headers, data=payload, files=files)
+    response = requests.request("POST", url, headers=headers, data=payload, files=files, timeout=load_timeout("asr_upload", 180))
     
     response_json = response.json()
     

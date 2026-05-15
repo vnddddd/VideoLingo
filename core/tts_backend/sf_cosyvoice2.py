@@ -30,7 +30,7 @@ def cosyvoice_tts_for_videolingo(text, save_as, number, task_df):
                 raise
 
     reference_base64 = wav_to_base64(ref_audio_path)
-    client = OpenAI(api_key=API_KEY, base_url="https://api.siliconflow.cn/v1")
+    client = OpenAI(api_key=API_KEY, base_url="https://api.siliconflow.cn/v1", timeout=load_timeout("tts", 60))
 
     save_path = Path(save_as)
     save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -40,6 +40,7 @@ def cosyvoice_tts_for_videolingo(text, save_as, number, task_df):
         voice="",
         input=text,
         response_format="wav",
+        timeout=load_timeout("tts", 60),
         extra_body={"references": [{"audio": f"data:audio/wav;base64,{reference_base64}", "text": prompt_text}]}
     ) as response:
         response.stream_to_file(save_path)

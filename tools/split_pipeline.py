@@ -26,8 +26,10 @@ Run from the VideoLingo project root, for example:
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -47,6 +49,15 @@ os.chdir(PROJECT_ROOT)
 # packages (for example demucs on the local/text machine) may be intentionally
 # absent, but `python tools/split_pipeline.py --help` and status checks should
 # still work.  Command handlers import the modules they actually need lazily.
+# Windows legacy locales such as GBK cannot encode emoji/checkmark output used
+# by rich in downstream core modules; replace unencodable characters instead of
+# crashing the background Streamlit subprocess.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(errors="replace")
+        except Exception:
+            pass
 
 DUB_AUDIO_FILE = Path("output/dub.mp3")
 DUB_SUB_FILE = Path("output/dub.srt")
@@ -57,14 +68,43 @@ RAW_AUDIO_FILE = Path("output/audio/raw.mp3")
 VOCAL_AUDIO_FILE = Path("output/audio/vocal.mp3")
 BACKGROUND_AUDIO_FILE = Path("output/audio/background.mp3")
 
+# Output checkpoints used to make the local split pipeline resumable. These
+# mirror core/utils/models.py and the subtitle/audio files produced by _6/_10/_11.
+CLEANED_CHUNKS_FILE = Path("output/log/cleaned_chunks.xlsx")
+SPLIT_BY_NLP_FILE = Path("output/log/split_by_nlp.txt")
+SPLIT_BY_MEANING_FILE = Path("output/log/split_by_meaning.txt")
+TERMINOLOGY_FILE = Path("output/log/terminology.json")
+TRANSLATION_FILE = Path("output/log/translation_results.xlsx")
+SPLIT_SUB_FILE = Path("output/log/translation_results_for_subtitles.xlsx")
+REMERGED_FILE = Path("output/log/translation_results_remerged.xlsx")
+AUDIO_TASK_FILE = Path("output/audio/tts_tasks.xlsx")
+SRC_SUB_FILE = Path("output/src.srt")
+TRANS_SUB_FILE = Path("output/trans.srt")
+SRC_TRANS_SUB_FILE = Path("output/src_trans.srt")
+TRANS_SRC_SUB_FILE = Path("output/trans_src.srt")
+AUDIO_SRC_SUB_FILE = Path("output/audio/src_subs_for_audio.srt")
+AUDIO_TRANS_SUB_FILE = Path("output/audio/trans_subs_for_audio.srt")
+AUDIO_REFERS_DIR = Path("output/audio/refers")
+AUDIO_SEGS_DIR = Path("output/audio/segs")
+
+
+def _safe_print(message: str) -> None:
+    """Print without crashing on legacy Windows encodings such as GBK."""
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    safe_message = message.encode(encoding, errors="replace").decode(encoding, errors="replace")
+    print(safe_message)
+
 
 def _rprint(message: str) -> None:
     try:
         from rich import print as rich_print
     except Exception:
-        print(message)
+        _safe_print(message)
     else:
-        rich_print(message)
+        try:
+            rich_print(message)
+        except UnicodeError:
+            _safe_print(message)
 
 REMOTE_TO_LOCAL_FILES = [
     RAW_AUDIO_FILE,
@@ -122,6 +162,33 @@ def _print_file_status(paths: Sequence[Path | str], title: str) -> None:
         p = Path(path)
         mark = "OK" if p.exists() else "MISSING"
         print(f"  {mark:7} {_display_path(p)}")
+
+
+def _checkpoint_complete(outputs: Sequence[Path | str]) -> bool:
+    """Return True only when every expected output exists and non-empty files are not zero-byte."""
+    if not outputs:
+        return False
+    for output in outputs:
+        path = Path(output)
+        if not path.exists():
+            return False
+        if path.is_file() and path.stat().st_size == 0:
+            return False
+    return True
+
+
+def _directory_has_files(path: Path | str, pattern: str = "*") -> bool:
+    directory = Path(path)
+    return directory.is_dir() and any(item.is_file() for item in directory.glob(pattern))
+
+
+def _run_if_missing(label: str, outputs: Sequence[Path | str], func: Callable[[], object]) -> None:
+    if _checkpoint_complete(outputs):
+        output_text = ", ".join(_display_path(path) for path in outputs)
+        print(f"[SKIP] {label}: {output_text} already exists.")
+        return
+    func()
+    _require_files(outputs, f"{label} output")
 
 
 def _run_steps(steps: Sequence[tuple[str, Callable[[], object]]]) -> None:
@@ -182,46 +249,219 @@ def cmd_prep_audio(args: argparse.Namespace) -> None:
     _print_file_status(required, "prep-audio output")
 
 
+LOCAL_STEP_ALIASES = {
+    "asr": 0,
+    "split": 1,
+    "translate": 2,
+    "subtitles": 3,
+    "timeline": 4,
+    "audio-tasks": 5,
+    "reference-audio": 6,
+    "tts-merge": 7,
+}
+
+
+def _read_xlsx_header_without_openpyxl(path: Path) -> set[str]:
+    """Read the first-row cell values from a simple .xlsx without pandas/openpyxl."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            sheet_xml = archive.read("xl/worksheets/sheet1.xml").decode("utf-8", errors="replace")
+            shared_strings: list[str] = []
+            if "xl/sharedStrings.xml" in archive.namelist():
+                shared_xml = archive.read("xl/sharedStrings.xml").decode("utf-8", errors="replace")
+                shared_strings = [html.unescape(value) for value in re.findall(r"<t[^>]*>(.*?)</t>", shared_xml, flags=re.S)]
+    except Exception:
+        return set()
+
+    row_match = re.search(r"<row[^>]*\br=[\"']1[\"'][^>]*>(.*?)</row>", sheet_xml, flags=re.S)
+    if not row_match:
+        return set()
+
+    columns: set[str] = set()
+    for cell in re.findall(r"<c\b([^>]*)>(.*?)</c>", row_match.group(1), flags=re.S):
+        attrs, body = cell
+        cell_type_match = re.search(r"\bt=[\"']([^\"']+)[\"']", attrs)
+        cell_type = cell_type_match.group(1) if cell_type_match else ""
+        value = ""
+        if cell_type == "inlineStr":
+            parts = re.findall(r"<t[^>]*>(.*?)</t>", body, flags=re.S)
+            value = "".join(html.unescape(part) for part in parts)
+        else:
+            value_match = re.search(r"<v>(.*?)</v>", body, flags=re.S)
+            if value_match:
+                value = html.unescape(value_match.group(1))
+                if cell_type == "s":
+                    try:
+                        value = shared_strings[int(value)]
+                    except Exception:
+                        pass
+        if value:
+            columns.add(value)
+    return columns
+
+
+def _audio_task_has_columns(required_columns: Sequence[str]) -> bool:
+    if not _checkpoint_complete([AUDIO_TASK_FILE]):
+        return False
+    try:
+        import pandas as pd
+
+        columns = set(pd.read_excel(AUDIO_TASK_FILE, nrows=0).columns)
+    except Exception:
+        columns = _read_xlsx_header_without_openpyxl(AUDIO_TASK_FILE)
+    return set(required_columns).issubset(columns)
+
+
+def _require_audio_task_columns(required_columns: Sequence[str], context: str) -> None:
+    if not _audio_task_has_columns(required_columns):
+        missing = ", ".join(required_columns)
+        raise RuntimeError(f"Missing required column(s) for {context}: {missing} in {_display_path(AUDIO_TASK_FILE)}")
+
+
+def _expected_audio_segment_files() -> list[Path]:
+    """Return output/audio/segs/*.wav files expected from tts_tasks.xlsx."""
+    _require_audio_task_columns(["number", "lines"], "TTS segment checkpoint")
+    import pandas as pd
+
+    df = pd.read_excel(AUDIO_TASK_FILE)
+    expected: list[Path] = []
+    for _, row in df.iterrows():
+        number = row["number"]
+        lines = row["lines"]
+        if isinstance(lines, str):
+            lines = eval(lines)
+        for line_index in range(len(lines)):
+            expected.append(AUDIO_SEGS_DIR / f"{number}_{line_index}.wav")
+    return expected
+
+
+def _all_expected_audio_segments_exist() -> bool:
+    try:
+        expected = _expected_audio_segment_files()
+    except Exception:
+        return False
+    return bool(expected) and _checkpoint_complete(expected)
+
+
+def _require_expected_audio_segments(context: str) -> None:
+    expected = _expected_audio_segment_files()
+    if not expected:
+        raise RuntimeError(f"No expected audio segment(s) found for {context} in {_display_path(AUDIO_TASK_FILE)}")
+    _require_files(expected, context)
+
+
 def _text_and_audio_steps() -> list[tuple[str, Callable[[], object]]]:
-    """Match st.py's normal flow but stop after core/_11_merge_audio.py."""
-    from core import (
-        _2_asr,
-        _3_1_split_nlp,
-        _3_2_split_meaning,
-        _4_1_summarize,
-        _4_2_translate,
-        _5_split_sub,
-        _6_gen_sub,
-        _8_1_audio_task,
-        _8_2_dub_chunks,
-        _9_refer_audio,
-        _10_gen_audio,
-        _11_merge_audio,
-    )
+    """Match st.py's normal flow but stop after core/_11_merge_audio.py.
+
+    Each step has an output checkpoint guard. Re-running the command after a
+    pause/stop/crash skips completed work and resumes at the first missing
+    checkpoint instead of starting from Whisper/translation again.
+    """
+    def _core_module(module_name: str):
+        """Import a core step only when that guarded step actually needs it."""
+        import importlib
+
+        return importlib.import_module(f"core.{module_name}")
+
+    def sentence_segmentation() -> None:
+        _3_1_split_nlp = _core_module("_3_1_split_nlp")
+        _3_2_split_meaning = _core_module("_3_2_split_meaning")
+        _run_if_missing("NLP sentence split", [SPLIT_BY_NLP_FILE], _3_1_split_nlp.split_by_spacy)
+        _run_if_missing("Meaning sentence split", [SPLIT_BY_MEANING_FILE], _3_2_split_meaning.split_sentences_by_meaning)
+
+    def summarize_and_translate() -> None:
+        _4_1_summarize = _core_module("_4_1_summarize")
+        _4_2_translate = _core_module("_4_2_translate")
+        _run_if_missing("Summarization", [TERMINOLOGY_FILE], _4_1_summarize.get_summary)
+        _run_if_missing("Translation", [TRANSLATION_FILE], _4_2_translate.translate_all)
+
+    def audio_tasks_and_chunks() -> None:
+        # Avoid importing TTS task modules when the workbook is already complete;
+        # their optional dependencies are only needed if this step must run.
+        if _audio_task_has_columns(["lines", "src_lines"]):
+            print(f"[SKIP] Audio task/chunk generation: {_display_path(AUDIO_TASK_FILE)} already has chunk metadata.")
+            return
+
+        if _checkpoint_complete([AUDIO_TASK_FILE]):
+            print(f"[SKIP] Audio task generation: {_display_path(AUDIO_TASK_FILE)} already exists.")
+        else:
+            _8_1_audio_task = _core_module("_8_1_audio_task")
+            _8_1_audio_task.gen_audio_task_main()
+            _require_files([AUDIO_TASK_FILE], "Audio task generation output")
+
+        # _8_2 augments the same workbook with chunk columns; require columns
+        # used later by _11 rather than checking only that the workbook exists.
+        if _audio_task_has_columns(["lines", "src_lines"]):
+            print(f"[SKIP] Audio chunk generation: {_display_path(AUDIO_TASK_FILE)} already has chunk metadata.")
+        else:
+            _8_2_dub_chunks = _core_module("_8_2_dub_chunks")
+            _8_2_dub_chunks.gen_dub_chunks()
+            _require_audio_task_columns(["lines", "src_lines"], "Audio chunk generation output")
+
+    def reference_audio() -> None:
+        # When demucs is disabled, _9 intentionally skips extraction; do not
+        # force the refers directory to exist in that mode.
+        from core.utils.config_utils import load_key
+
+        if not bool(load_key("demucs")):
+            print("[SKIP] Reference audio extraction: config demucs=false.")
+            return
+        if _directory_has_files(AUDIO_REFERS_DIR, "*.wav"):
+            print(f"[SKIP] Reference audio extraction: {_display_path(AUDIO_REFERS_DIR)} already contains wav files.")
+            return
+        _9_refer_audio = _core_module("_9_refer_audio")
+        _9_refer_audio.extract_refer_audio_main()
+        if not _directory_has_files(AUDIO_REFERS_DIR, "*.wav"):
+            raise FileNotFoundError(f"Missing required file(s) for Reference audio extraction output:\n  - {_display_path(AUDIO_REFERS_DIR)}/*.wav")
+
+    def tts_and_merge() -> None:
+        if _checkpoint_complete([DUB_AUDIO_FILE, DUB_SUB_FILE]):
+            print(f"[SKIP] TTS/audio merge: {_display_path(DUB_AUDIO_FILE)} and {_display_path(DUB_SUB_FILE)} already exist.")
+            return
+        if _all_expected_audio_segments_exist():
+            print(f"[SKIP] TTS segment generation: all expected wav files already exist in {_display_path(AUDIO_SEGS_DIR)}.")
+        else:
+            _10_gen_audio = _core_module("_10_gen_audio")
+            _10_gen_audio.gen_audio()
+        _require_expected_audio_segments("TTS segment generation output")
+        _11_merge_audio = _core_module("_11_merge_audio")
+        _run_if_missing("Final dub audio/subtitle merge", [DUB_AUDIO_FILE, DUB_SUB_FILE], _11_merge_audio.merge_full_audio)
+
+    def transcribe_step() -> None:
+        _2_asr = _core_module("_2_asr")
+        _run_if_missing("WhisperX word-level transcription", [CLEANED_CHUNKS_FILE], _2_asr.transcribe)
+
+    def split_subtitles() -> None:
+        _5_split_sub = _core_module("_5_split_sub")
+        _run_if_missing("Cut and align long subtitles", [SPLIT_SUB_FILE, REMERGED_FILE], _5_split_sub.split_for_sub_main)
+
+    def generate_timeline() -> None:
+        _6_gen_sub = _core_module("_6_gen_sub")
+        _run_if_missing("Generate timeline and subtitles", [SRC_SUB_FILE, TRANS_SUB_FILE, SRC_TRANS_SUB_FILE, TRANS_SRC_SUB_FILE, AUDIO_SRC_SUB_FILE, AUDIO_TRANS_SUB_FILE], _6_gen_sub.align_timestamp_main)
 
     return [
-        ("WhisperX word-level transcription", _2_asr.transcribe),
-        (
-            "Sentence segmentation using NLP and LLM",
-            lambda: (
-                _3_1_split_nlp.split_by_spacy(),
-                _3_2_split_meaning.split_sentences_by_meaning(),
-            ),
-        ),
-        (
-            "Summarization and multi-step translation",
-            lambda: (_4_1_summarize.get_summary(), _4_2_translate.translate_all()),
-        ),
-        ("Cut and align long subtitles", _5_split_sub.split_for_sub_main),
-        ("Generate timeline and subtitles", _6_gen_sub.align_timestamp_main),
-        ("Generate audio tasks and chunks", lambda: (_8_1_audio_task.gen_audio_task_main(), _8_2_dub_chunks.gen_dub_chunks())),
-        ("Extract reference audio", _9_refer_audio.extract_refer_audio),
-        ("Generate audio and merge into dub.mp3/dub.srt", lambda: (_10_gen_audio.gen_audio(), _11_merge_audio.merge_full_audio())),
+        ("WhisperX word-level transcription", transcribe_step),
+        ("Sentence segmentation using NLP and LLM", sentence_segmentation),
+        ("Summarization and multi-step translation", summarize_and_translate),
+        ("Cut and align long subtitles", split_subtitles),
+        ("Generate timeline and subtitles", generate_timeline),
+        ("Generate audio tasks and chunks", audio_tasks_and_chunks),
+        ("Extract reference audio", reference_audio),
+        ("Generate audio and merge into dub.mp3/dub.srt", tts_and_merge),
     ]
 
 
-def cmd_local_until_audio(args: argparse.Namespace) -> None:
-    """Run the local VideoLingo pipeline and stop before final video render."""
+def _local_step_by_alias(alias: str) -> tuple[str, Callable[[], object]]:
+    steps = _text_and_audio_steps()
+    try:
+        index = LOCAL_STEP_ALIASES[alias]
+    except KeyError as exc:
+        choices = ", ".join(LOCAL_STEP_ALIASES)
+        raise RuntimeError(f"Unknown local step '{alias}'. Valid choices: {choices}") from exc
+    return steps[index]
+
+
+def _require_local_inputs() -> None:
     video = _find_unique_video()
     print(f"Source video: {_display_path(video)}")
 
@@ -235,6 +475,18 @@ def cmd_local_until_audio(args: argparse.Namespace) -> None:
         print("[INFO] config demucs=false; vocal/background are not required for ASR.")
     _require_files(required_inputs, "local-stop-before-video input")
 
+
+def cmd_local_step(args: argparse.Namespace) -> None:
+    """Run one guarded local split-pipeline step by alias."""
+    _require_local_inputs()
+    label, func = _local_step_by_alias(args.step)
+    _rprint(f"\n[bold cyan]▶ Local step: {label}[/bold cyan]")
+    func()
+
+
+def cmd_local_until_audio(args: argparse.Namespace) -> None:
+    """Run the local VideoLingo pipeline and stop before final video render."""
+    _require_local_inputs()
     _run_steps(_text_and_audio_steps())
     _require_files([DUB_AUDIO_FILE, DUB_SUB_FILE], "local-stop-before-video output")
     print("\n[OK] Local pipeline stopped before final video render.")
@@ -327,6 +579,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run text/TTS/audio pipeline through _11_merge_audio.py, then stop before _12.",
     )
     local.set_defaults(func=cmd_local_until_audio)
+
+    local_step = subparsers.add_parser(
+        "local-step",
+        help="Run one guarded local split-pipeline step; used by the Streamlit split UI for resumable progress.",
+    )
+    local_step.add_argument("step", choices=tuple(LOCAL_STEP_ALIASES.keys()))
+    local_step.set_defaults(func=cmd_local_step)
 
     pack = subparsers.add_parser(
         "pack-render-inputs",

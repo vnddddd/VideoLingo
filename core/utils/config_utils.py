@@ -45,6 +45,27 @@ def update_key(key, new_value):
             return True
         else:
             raise KeyError(f"Key '{keys[-1]}' not found in configuration")
+
+
+def load_timeout(key, default):
+    """Read request_timeout.<key> as a positive seconds value, with safe fallback."""
+    try:
+        value = load_key(f'request_timeout.{key}')
+    except KeyError:
+        return default
+
+    if value is None or value == '':
+        return default
+
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        return default
+
+    if timeout <= 0:
+        return default
+
+    return int(timeout) if timeout.is_integer() else timeout
         
 # basic utils
 def get_joiner(language):

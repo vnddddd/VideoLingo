@@ -3,7 +3,7 @@ import json
 from threading import Lock
 import json_repair
 from openai import OpenAI
-from core.utils.config_utils import load_key
+from core.utils.config_utils import load_key, load_timeout
 from rich import print as rprint
 from core.utils.decorator import except_handler
 
@@ -64,6 +64,7 @@ def ask_gpt(prompt, resp_type=None, valid_def=None, log_title="default"):
         api_key=load_key("api.key"),
         base_url=base_url,
         default_headers={"User-Agent": "python-requests/2.32.3"},
+        timeout=load_timeout("llm", 300),
     )
     response_format = {"type": "json_object"} if resp_type == "json" and load_key("api.llm_support_json") else None
 
@@ -73,7 +74,7 @@ def ask_gpt(prompt, resp_type=None, valid_def=None, log_title="default"):
         model=model,
         messages=messages,
         response_format=response_format,
-        timeout=300
+        timeout=load_timeout("llm", 300)
     )
     resp_raw = client.chat.completions.create(**params)
 

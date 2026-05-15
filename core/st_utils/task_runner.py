@@ -16,6 +16,14 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 
+_CURRENT_RUNNER = threading.local()
+
+
+def get_current_runner() -> "TaskRunner | None":
+    """Return the TaskRunner currently executing on this worker thread, if any."""
+    return getattr(_CURRENT_RUNNER, "runner", None)
+
+
 class StopTask(Exception):
     """Raised when the task is stopped by user."""
 
@@ -32,6 +40,8 @@ class TaskRunner:
     total_steps: int = 0
     current_label: str = ""
     error_msg: str = ""
+    logs: list[str] = field(default_factory=list)
+    max_log_lines: int = 500
 
     # Internal
     _pause_event: threading.Event = field(default_factory=threading.Event)
@@ -66,6 +76,7 @@ class TaskRunner:
         self.current_step = -1
         self.current_label = ""
         self.error_msg = ""
+        self.logs = []
         self.state = "running"
 
         self._pause_event.set()
@@ -99,7 +110,16 @@ class TaskRunner:
             self.total_steps = 0
             self.current_label = ""
             self.error_msg = ""
+            self.logs = []
             self._steps = []
+
+    def log(self, message: object):
+        """Append one or more log lines for the Streamlit task panel."""
+        text = "" if message is None else str(message)
+        for line in text.splitlines() or [""]:
+            self.logs.append(line)
+        if len(self.logs) > self.max_log_lines:
+            self.logs = self.logs[-self.max_log_lines:]
 
     @property
     def is_active(self) -> bool:
@@ -137,9 +157,16 @@ class TaskRunner:
 
                 self.current_step = i
                 self.current_label = label
-                func()
+                self.log(f"[STEP {i + 1}/{self.total_steps}] {label}")
+                _CURRENT_RUNNER.runner = self
+                try:
+                    func()
+                finally:
+                    _CURRENT_RUNNER.runner = None
 
+            self.log("[DONE] Task completed")
             self.state = "completed"
         except Exception as e:
             self.error_msg = str(e)
+            self.log(f"[ERROR] {self.error_msg}")
             self.state = "error"

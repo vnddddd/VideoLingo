@@ -27,7 +27,7 @@ from pathlib import Path
 
 import requests
 
-from core.utils import load_key, except_handler
+from core.utils import load_key, except_handler, load_timeout
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +111,21 @@ def _build_payload(
     raise ValueError(f"Unknown MiMo TTS model: {model!r}. Supported: {SUPPORTED_MODELS}")
 
 
+def _normalize_base_url(base_url: str) -> str:
+    """Normalize MiMo OpenAI-compatible base URL.
+
+    MiMo's docs use endpoints like ``https://token-plan-sgp.xiaomimimo.com/v1``.
+    Users often configure only the host (``https://token-plan-sgp.xiaomimimo.com``),
+    which would otherwise post to ``/chat/completions`` and return openresty 404.
+    """
+    if not base_url:
+        base_url = DEFAULT_BASE_URL
+    base_url = base_url.rstrip("/")
+    if base_url.endswith("/v1") or "/v1/" in base_url:
+        return base_url
+    return base_url + "/v1"
+
+
 def _call_mimo_api(
     text: str,
     save_as: str,
@@ -134,7 +149,7 @@ def _call_mimo_api(
         raise ValueError(f"Unsupported model: {model!r}; expected one of {SUPPORTED_MODELS}")
 
     payload = _build_payload(text, model, **kwargs)
-    url = base_url.rstrip("/") + "/chat/completions"
+    url = _normalize_base_url(base_url) + "/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -239,7 +254,15 @@ def mimo_tts_for_videolingo(text, save_as, number=0, task_df=None):
             f"Choose one of: {SUPPORTED_MODELS}"
         )
 
-    n_bytes = _call_mimo_api(text, save_as, api_key, base_url, model, **kwargs)
+    n_bytes = _call_mimo_api(
+        text,
+        save_as,
+        api_key,
+        base_url,
+        model,
+        timeout=load_timeout("tts", 60),
+        **kwargs,
+    )
     print(f"MiMo TTS [{model}] audio saved to {save_as} ({n_bytes} bytes)")
     return True
 

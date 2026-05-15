@@ -106,7 +106,7 @@ def transcribe_audio_elevenlabs(raw_audio_path, vocal_audio_path, start = None, 
         with open(temp_filepath, 'rb') as audio_file:
             files = {"file": (os.path.basename(temp_filepath), audio_file, 'audio/mpeg')}
             start_time = time.time()
-            response = requests.post(base_url, headers=headers, data=data, files=files)
+            response = requests.post(base_url, headers=headers, data=data, files=files, timeout=load_timeout("asr_upload", 180))
             
         rprint(f"[yellow]API request sent, status code: {response.status_code}[/yellow]")
         result = response.json()

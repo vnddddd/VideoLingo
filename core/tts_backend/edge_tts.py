@@ -22,7 +22,7 @@ def edge_tts(text, save_path):
     speech_file_path.parent.mkdir(parents=True, exist_ok=True)
     
     cmd = ["edge-tts", "--voice", voice, "--text", text, "--write-media", str(speech_file_path)]
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, timeout=load_timeout("tts", 60))
     print(f"Audio saved to {speech_file_path}")
 
 if __name__ == "__main__":

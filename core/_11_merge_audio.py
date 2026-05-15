@@ -1,4 +1,5 @@
 import os
+import wave
 import pandas as pd
 import numpy as np  # noqa: F401  # required by eval() for cells containing np.float64(...) repr (numpy 2.x)
 import subprocess
@@ -36,8 +37,18 @@ def get_audio_files(df):
             audios.append(temp_file)
     return audios
 
-def process_audio_segment(audio_file):
-    """Process a single audio segment with MP3 compression"""
+def process_audio_segment(audio_file, fallback_duration_ms=100):
+    """Process one WAV segment, tolerating zero-frame files from ultra-short subtitles."""
+    try:
+        with wave.open(audio_file, 'rb') as wav_file:
+            frames = wav_file.getnframes()
+            frame_rate = wav_file.getframerate()
+            if frames <= 0 or frame_rate <= 0:
+                rprint(f"[yellow]Empty audio segment detected, using silence: {audio_file}[/yellow]")
+                return AudioSegment.silent(duration=fallback_duration_ms, frame_rate=16000)
+    except (wave.Error, EOFError, FileNotFoundError) as exc:
+        raise RuntimeError(f"Invalid audio segment {audio_file}: {exc}") from exc
+
     temp_file = f"{audio_file}_temp.mp3"
     ffmpeg_cmd = [
         'ffmpeg', '-y',
@@ -47,20 +58,25 @@ def process_audio_segment(audio_file):
         '-b:a', '64k',
         temp_file
     ]
-    subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    audio_segment = AudioSegment.from_mp3(temp_file)
-    os.remove(temp_file)
+    result = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace')
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed to convert {audio_file}: {result.stderr}")
+    try:
+        audio_segment = AudioSegment.from_mp3(temp_file)
+    finally:
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
     return audio_segment
 
 def merge_audio_segments(audios, new_sub_times, sample_rate):
     merged_audio = AudioSegment.silent(duration=0, frame_rate=sample_rate)
     
     with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), BarColumn(), TaskProgressColumn()) as progress:
-        merge_task = progress.add_task("🎵 Merging audio segments...", total=len(audios))
+        merge_task = progress.add_task("Merging audio segments...", total=len(audios))
         
         for i, (audio_file, time_range) in enumerate(zip(audios, new_sub_times)):
             if not os.path.exists(audio_file):
-                console.print(f"[bold yellow]⚠️  Warning: File {audio_file} does not exist, skipping...[/bold yellow]")
+                console.print(f"[bold yellow]Warning: Warning: File {audio_file} does not exist, skipping...[/bold yellow]")
                 progress.advance(merge_task)
                 continue
                 
@@ -95,38 +111,38 @@ def create_srt_subtitle():
             f.write(f"{start_str} --> {end_str}\n")
             f.write(f"{line}\n\n")
     
-    rprint(f"[bold green]✅ Subtitle file created: {DUB_SUB_FILE}[/bold green]")
+    rprint(f"[bold green]OK: Subtitle file created: {DUB_SUB_FILE}[/bold green]")
 
 def merge_full_audio():
     """Main function: Process the complete audio merging process"""
-    console.print("\n[bold cyan]🎬 Starting audio merging process...[/bold cyan]")
+    console.print("\n[bold cyan]Starting audio merging process...[/bold cyan]")
     
-    with console.status("[bold cyan]📊 Loading data from Excel...[/bold cyan]"):
+    with console.status("[bold cyan]Loading data from Excel...[/bold cyan]"):
         df, lines, new_sub_times = load_and_flatten_data(_8_1_AUDIO_TASK)
-    console.print("[bold green]✅ Data loaded successfully[/bold green]")
+    console.print("[bold green]OK: Data loaded successfully[/bold green]")
     
-    with console.status("[bold cyan]🔍 Getting audio file list...[/bold cyan]"):
+    with console.status("[bold cyan]Getting audio file list...[/bold cyan]"):
         audios = get_audio_files(df)
-    console.print(f"[bold green]✅ Found {len(audios)} audio segments[/bold green]")
+    console.print(f"[bold green]OK: Found {len(audios)} audio segments[/bold green]")
     
-    with console.status("[bold cyan]📝 Generating subtitle file...[/bold cyan]"):
+    with console.status("[bold cyan]Generating subtitle file...[/bold cyan]"):
         create_srt_subtitle()
     
     if not os.path.exists(audios[0]):
-        console.print(f"[bold red]❌ Error: First audio file {audios[0]} does not exist![/bold red]")
+        console.print(f"[bold red]Error: Error: First audio file {audios[0]} does not exist![/bold red]")
         return
     
     sample_rate = 16000
-    console.print(f"[bold green]✅ Sample rate: {sample_rate}Hz[/bold green]")
+    console.print(f"[bold green]OK: Sample rate: {sample_rate}Hz[/bold green]")
 
-    console.print("[bold cyan]🔄 Starting audio merge process...[/bold cyan]")
+    console.print("[bold cyan]Starting audio merge process...[/bold cyan]")
     merged_audio = merge_audio_segments(audios, new_sub_times, sample_rate)
     
-    with console.status("[bold cyan]💾 Exporting final audio file...[/bold cyan]"):
+    with console.status("[bold cyan]Exporting final audio file...[/bold cyan]"):
         merged_audio = merged_audio.set_frame_rate(16000).set_channels(1)
         merged_audio.export(DUB_VOCAL_FILE, format="mp3", parameters=["-b:a", "64k"])
-    console.print(f"[bold green]✅ Audio file successfully merged![/bold green]")
-    console.print(f"[bold green]📁 Output file: {DUB_VOCAL_FILE}[/bold green]")
+    console.print(f"[bold green]OK: Audio file successfully merged![/bold green]")
+    console.print(f"[bold green]Output file: {DUB_VOCAL_FILE}[/bold green]")
 
 if __name__ == "__main__":
     merge_full_audio()

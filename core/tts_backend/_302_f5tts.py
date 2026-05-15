@@ -17,7 +17,7 @@ def upload_file_to_302(file_path):
     files = [('file', (os.path.basename(file_path), open(file_path, 'rb'), 'application/octet-stream'))]
     headers = {'Authorization': f'Bearer {API_KEY}'}
     
-    response = requests.request("POST", url, headers=headers, data={}, files=files)
+    response = requests.request("POST", url, headers=headers, data={}, files=files, timeout=load_timeout("tts", 60))
     
     if response.status_code == 200:
         response_data = response.json()
@@ -27,7 +27,7 @@ def upload_file_to_302(file_path):
     return None
 
 def _f5_tts(text: str, refer_url: str, save_path: str) -> bool:
-    conn = http.client.HTTPSConnection("api.302.ai")
+    conn = http.client.HTTPSConnection("api.302.ai", timeout=load_timeout("tts", 60))
     payload = json.dumps({"gen_text": text, "ref_audio_url": refer_url, "model_type": "F5-TTS"})
     headers = {'Authorization': f'Bearer {API_KEY}', 'Content-Type': 'application/json'}
 
@@ -38,7 +38,7 @@ def _f5_tts(text: str, refer_url: str, save_path: str) -> bool:
     if "audio_url" in data and "url" in data["audio_url"]:
         # Download audio file
         audio_url = data["audio_url"]["url"]
-        audio_conn = http.client.HTTPSConnection("file.302.ai")
+        audio_conn = http.client.HTTPSConnection("file.302.ai", timeout=load_timeout("tts", 60))
         audio_conn.request("GET", audio_url.replace("https://file.302.ai", ""))
         audio_res = audio_conn.getresponse()
         

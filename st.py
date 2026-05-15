@@ -1,7 +1,7 @@
 import streamlit as st
 import os, sys, time, subprocess
 from core.st_utils.imports_and_utils import *
-from core.st_utils.task_runner import TaskRunner
+from core.st_utils.task_runner import TaskRunner, get_current_runner
 from core import *
 
 # SET PATH
@@ -17,18 +17,68 @@ SPLIT_RENDER_ZIP = "output/render_inputs.zip"
 
 
 def _run_split_pipeline_command(*args: str) -> str:
-    """Run tools/split_pipeline.py as a subprocess from the project root."""
+    """Run tools/split_pipeline.py from the project root and let logs stream to the server terminal."""
     command = [sys.executable, "tools/split_pipeline.py", *args]
-    result = subprocess.run(command, text=True, capture_output=True)
-    output = (result.stdout + "\n" + result.stderr).strip()
+    print("$ " + " ".join(command), flush=True)
+
+    env = os.environ.copy()
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8:replace")
+    env.setdefault("PYTHONUNBUFFERED", "1")
+
+    process = subprocess.Popen(
+        command,
+        cwd=current_dir,
+        env=env,
+    )
+    returncode = process.wait()
+    if returncode != 0:
+        raise RuntimeError(f"split_pipeline failed with exit code {returncode}")
+    return ""
+
+
+def _run_split_pipeline_status_command() -> str:
+    """Run split pipeline status and return captured output for the UI."""
+    command = [sys.executable, "tools/split_pipeline.py", "status"]
+    print("$ " + " ".join(command), flush=True)
+
+    env = os.environ.copy()
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8:replace")
+    env.setdefault("PYTHONUNBUFFERED", "1")
+
+    result = subprocess.run(
+        command,
+        cwd=current_dir,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        errors="replace",
+    )
+    output = (result.stdout or "").strip()
     if result.returncode != 0:
-        raise RuntimeError(output or f"split_pipeline failed with exit code {result.returncode}")
+        raise RuntimeError(f"split_pipeline status failed with exit code {result.returncode}\n{output}")
     return output
 
 
 def _split_step(label: str, *args: str):
     """Build a TaskRunner step for a split pipeline CLI command."""
     return (label, lambda: _run_split_pipeline_command(*args))
+
+
+def _split_local_resume_steps():
+    """Expose local-stop-before-video as guarded sub-steps for pause/resume UI."""
+    return [
+        _split_step(t("WhisperX word-level transcription"), "local-step", "asr"),
+        _split_step(t("Sentence segmentation using NLP and LLM"), "local-step", "split"),
+        _split_step(t("Summarization and multi-step translation"), "local-step", "translate"),
+        _split_step(t("Cut and align long subtitles"), "local-step", "subtitles"),
+        _split_step(t("Generate timeline and subtitles"), "local-step", "timeline"),
+        _split_step(t("Generate audio tasks and chunks"), "local-step", "audio-tasks"),
+        _split_step(t("Extract reference audio"), "local-step", "reference-audio"),
+        _split_step(t("Generate audio and merge into dub.mp3/dub.srt"), "local-step", "tts-merge"),
+    ]
 
 
 # ─── Task control UI (auto-refreshes every 1s while task is active) ───
@@ -223,7 +273,7 @@ def split_pipeline_section():
         status_col, zip_col = st.columns(2)
         with status_col:
             if st.button(t("Check Split Pipeline Status"), key="split_pipeline_status", use_container_width=True):
-                st.code(_run_split_pipeline_command("status") or t("No status output."))
+                st.code(_run_split_pipeline_status_command() or t("No status output."))
         with zip_col:
             st.caption(t("Default render package path: output/render_inputs.zip"))
 
@@ -240,7 +290,7 @@ def split_pipeline_section():
                     st.rerun()
             with col2:
                 if st.button(t("2. Run Local Steps Until Audio"), key="split_pipeline_local_until_audio", use_container_width=True):
-                    runner.start([_split_step(t("Run local pipeline until audio is merged"), "local-stop-before-video")])
+                    runner.start(_split_local_resume_steps())
                     st.rerun()
                 if st.button(t("4. Render Final Video on Remote/GPU"), key="split_pipeline_remote_render", use_container_width=True):
                     runner.start([_split_step(t("Render final dubbed video"), "remote-render")])

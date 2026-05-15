@@ -21,12 +21,12 @@ def fish_tts(text: str, save_as: str) -> bool:
     
     headers = {'Authorization': f'Bearer {API_KEY}', 'Content-Type': 'application/json'}
     
-    response = requests.post(url, headers=headers, data=payload)
+    response = requests.post(url, headers=headers, data=payload, timeout=load_timeout("tts", 60))
     response.raise_for_status()
     response_data = response.json()
     
     if "url" in response_data:
-        audio_response = requests.get(response_data["url"])
+        audio_response = requests.get(response_data["url"], timeout=load_timeout("tts", 60))
         audio_response.raise_for_status()
         
         with open(save_as, "wb") as f:

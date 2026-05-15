@@ -14,7 +14,7 @@ def azure_tts(text: str, save_path: str) -> None:
        'Content-Type': 'application/ssml+xml'
     }
 
-    response = requests.request("POST", url, headers=headers, data=payload)
+    response = requests.request("POST", url, headers=headers, data=payload, timeout=load_timeout("tts", 60))
 
     with open(save_path, 'wb') as f:
         f.write(response.content)
