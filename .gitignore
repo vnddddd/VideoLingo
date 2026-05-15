@@ -175,6 +175,7 @@ installer_files/
 logs/
 
 # secrets backups & local artifacts (防止误推真 key 或私人内容)
+/cookies/
 config.yaml.bak*
 config.*.bak
 *.bak_before_*
