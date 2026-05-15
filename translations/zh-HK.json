@@ -122,5 +122,22 @@
     "Task completed!": "任務完成！",
     "Task stopped": "任務已停止",
     "Task error": "任務出錯",
-    "OK": "確定"
+    "OK": "確定",
+    "d. Split Local/Remote Pipeline": "d. Split Local/Remote Pipeline",
+    "Use these advanced actions when audio separation/final rendering must run on another machine.": "Use these advanced actions when audio separation/final rendering must run on another machine.",
+    "Remote/GPU machine: prepare raw, vocal and background audio": "Remote/GPU machine: prepare raw, vocal and background audio",
+    "Local machine: run subtitles and dubbing, stopping before final video render": "Local machine: run subtitles and dubbing, stopping before final video render",
+    "Create a render input zip for the remote/GPU machine": "Create a render input zip for the remote/GPU machine",
+    "Remote/GPU machine: render the final dubbed video": "Remote/GPU machine: render the final dubbed video",
+    "Check Split Pipeline Status": "Check Split Pipeline Status",
+    "No status output.": "No status output.",
+    "Default render package path: output/render_inputs.zip": "Default render package path: output/render_inputs.zip",
+    "1. Prepare Audio on Remote/GPU": "1. Prepare Audio on Remote/GPU",
+    "2. Run Local Steps Until Audio": "2. Run Local Steps Until Audio",
+    "3. Package Render Inputs": "3. Package Render Inputs",
+    "4. Render Final Video on Remote/GPU": "4. Render Final Video on Remote/GPU",
+    "Prepare split pipeline audio": "Prepare split pipeline audio",
+    "Package render inputs": "Package render inputs",
+    "Run local pipeline until audio is merged": "Run local pipeline until audio is merged",
+    "Render final dubbed video": "Render final dubbed video"
 }

@@ -122,5 +122,22 @@
     "Task completed!": "任务完成！",
     "Task stopped": "任务已停止",
     "Task error": "任务出错",
-    "OK": "确定"
+    "OK": "确定",
+    "d. Split Local/Remote Pipeline": "d. 拆分本地/远程流水线",
+    "Use these advanced actions when audio separation/final rendering must run on another machine.": "当音频分离或最终渲染需要在另一台机器上运行时，使用这些高级操作。",
+    "Remote/GPU machine: prepare raw, vocal and background audio": "远程/GPU机器：准备 raw、vocal 和 background 音频",
+    "Local machine: run subtitles and dubbing, stopping before final video render": "本地机器：运行字幕和配音，在最终视频渲染前停止",
+    "Create a render input zip for the remote/GPU machine": "创建给远程/GPU机器使用的渲染输入zip包",
+    "Remote/GPU machine: render the final dubbed video": "远程/GPU机器：渲染最终配音视频",
+    "Check Split Pipeline Status": "检查拆分流水线状态",
+    "No status output.": "没有状态输出。",
+    "Default render package path: output/render_inputs.zip": "默认渲染包路径：output/render_inputs.zip",
+    "1. Prepare Audio on Remote/GPU": "1. 在远程/GPU准备音频",
+    "2. Run Local Steps Until Audio": "2. 本地运行到音频合并",
+    "3. Package Render Inputs": "3. 打包渲染输入",
+    "4. Render Final Video on Remote/GPU": "4. 在远程/GPU渲染最终视频",
+    "Prepare split pipeline audio": "准备拆分流水线音频",
+    "Package render inputs": "打包渲染输入",
+    "Run local pipeline until audio is merged": "运行本地流水线直到音频合并",
+    "Render final dubbed video": "渲染最终配音视频"
 }

@@ -1,5 +1,5 @@
 import streamlit as st
-import os, sys, time
+import os, sys, time, subprocess
 from core.st_utils.imports_and_utils import *
 from core.st_utils.task_runner import TaskRunner
 from core import *
@@ -13,6 +13,22 @@ st.set_page_config(page_title="VideoLingo", page_icon="docs/logo.svg")
 
 SUB_VIDEO = "output/output_sub.mp4"
 DUB_VIDEO = "output/output_dub.mp4"
+SPLIT_RENDER_ZIP = "output/render_inputs.zip"
+
+
+def _run_split_pipeline_command(*args: str) -> str:
+    """Run tools/split_pipeline.py as a subprocess from the project root."""
+    command = [sys.executable, "tools/split_pipeline.py", *args]
+    result = subprocess.run(command, text=True, capture_output=True)
+    output = (result.stdout + "\n" + result.stderr).strip()
+    if result.returncode != 0:
+        raise RuntimeError(output or f"split_pipeline failed with exit code {result.returncode}")
+    return output
+
+
+def _split_step(label: str, *args: str):
+    """Build a TaskRunner step for a split pipeline CLI command."""
+    return (label, lambda: _run_split_pipeline_command(*args))
 
 
 # ─── Task control UI (auto-refreshes every 1s while task is active) ───
@@ -186,6 +202,51 @@ def _get_audio_steps():
     return steps
 
 
+def split_pipeline_section():
+    st.header(t("d. Split Local/Remote Pipeline"))
+    runner = TaskRunner.get(st.session_state, "_split_pipeline_runner")
+
+    with st.container(border=True):
+        st.markdown(
+            f"""
+        <p style='font-size: 20px;'>
+        {t("Use these advanced actions when audio separation/final rendering must run on another machine.")}
+        <p style='font-size: 20px;'>
+            1. {t("Remote/GPU machine: prepare raw, vocal and background audio")}<br>
+            2. {t("Local machine: run subtitles and dubbing, stopping before final video render")}<br>
+            3. {t("Create a render input zip for the remote/GPU machine")}<br>
+            4. {t("Remote/GPU machine: render the final dubbed video")}
+        """,
+            unsafe_allow_html=True,
+        )
+
+        status_col, zip_col = st.columns(2)
+        with status_col:
+            if st.button(t("Check Split Pipeline Status"), key="split_pipeline_status", use_container_width=True):
+                st.code(_run_split_pipeline_command("status") or t("No status output."))
+        with zip_col:
+            st.caption(t("Default render package path: output/render_inputs.zip"))
+
+        if runner.is_active or runner.is_done:
+            _task_control_panel("_split_pipeline_runner")
+        else:
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button(t("1. Prepare Audio on Remote/GPU"), key="split_pipeline_prep_audio", use_container_width=True):
+                    runner.start([_split_step(t("Prepare split pipeline audio"), "prep-audio")])
+                    st.rerun()
+                if st.button(t("3. Package Render Inputs"), key="split_pipeline_pack", use_container_width=True):
+                    runner.start([_split_step(t("Package render inputs"), "pack-render-inputs", "--zip", SPLIT_RENDER_ZIP)])
+                    st.rerun()
+            with col2:
+                if st.button(t("2. Run Local Steps Until Audio"), key="split_pipeline_local_until_audio", use_container_width=True):
+                    runner.start([_split_step(t("Run local pipeline until audio is merged"), "local-stop-before-video")])
+                    st.rerun()
+                if st.button(t("4. Render Final Video on Remote/GPU"), key="split_pipeline_remote_render", use_container_width=True):
+                    runner.start([_split_step(t("Render final dubbed video"), "remote-render")])
+                    st.rerun()
+
+
 def audio_processing_section():
     st.header(t("c. Dubbing"))
     runner = TaskRunner.get(st.session_state, "_audio_runner")
@@ -254,6 +315,7 @@ def main():
     download_video_section()
     text_processing_section()
     audio_processing_section()
+    split_pipeline_section()
 
 
 if __name__ == "__main__":
