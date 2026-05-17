@@ -7,7 +7,6 @@ import numpy as np
 from rich.console import Console
 
 from core._1_ytdlp import find_video_files
-from core.asr_backend.audio_preprocess import normalize_audio_volume
 from core.utils import *
 from core.utils.models import *
 
@@ -16,6 +15,7 @@ console = Console()
 DUB_VIDEO = "output/output_dub.mp4"
 DUB_SUB_FILE = 'output/dub.srt'
 DUB_AUDIO = 'output/dub.mp3'
+FINAL_AUDIO_LOUDNORM_FILTER = 'loudnorm=I=-13:TP=-1.5:LRA=11'
 
 TRANS_FONT_SIZE = 17
 TRANS_FONT_NAME = 'Arial'
@@ -65,11 +65,14 @@ def merge_video_audio():
         rprint("[bold green]Placeholder video has been generated.[/bold green]")
         return
 
-    # Normalize dub audio
-    normalized_dub_audio = 'output/normalized_dub.wav'
-    normalize_audio_volume(DUB_AUDIO, normalized_dub_audio)
-    
-    # Merge video and audio with translated subtitles
+    # Merge video and audio with translated subtitles.
+    # Final loudness normalization is applied after amix so the exported video,
+    # not just the standalone dub track, lands at the target perceived loudness.
+    # This avoids the old dBFS-only normalization being attenuated again by amix.
+    rprint(
+        f"[bold green]Final audio loudness normalization: "
+        f"{FINAL_AUDIO_LOUDNORM_FILTER}[/bold green]"
+    )
     video = cv2.VideoCapture(VIDEO_FILE)
     TARGET_WIDTH = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
     TARGET_HEIGHT = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -84,12 +87,13 @@ def merge_video_audio():
     )
     
     cmd = [
-        'ffmpeg', '-y', '-i', VIDEO_FILE, '-i', background_file, '-i', normalized_dub_audio,
+        'ffmpeg', '-y', '-i', VIDEO_FILE, '-i', background_file, '-i', DUB_AUDIO,
         '-filter_complex',
         f'[0:v]scale={TARGET_WIDTH}:{TARGET_HEIGHT}:force_original_aspect_ratio=decrease,'
         f'pad={TARGET_WIDTH}:{TARGET_HEIGHT}:(ow-iw)/2:(oh-ih)/2,'
         f'{subtitle_filter}[v];'
-        f'[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=3[a]'
+        f'[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=3[mixed];'
+        f'[mixed]{FINAL_AUDIO_LOUDNORM_FILTER}[a]'
     ]
 
     # Hardware-accelerated encoder selection (cpu/nvenc/qsv/amf/auto)
