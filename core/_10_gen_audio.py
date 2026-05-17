@@ -3,7 +3,9 @@ import time
 import shutil
 import subprocess
 import wave
-from typing import Tuple
+import threading
+from functools import lru_cache
+from typing import Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -24,6 +26,36 @@ TEMP_FILE_TEMPLATE = f"{_AUDIO_TMP_DIR}/{{}}_temp.wav"
 OUTPUT_FILE_TEMPLATE = f"{_AUDIO_SEGS_DIR}/{{}}.wav"
 WARMUP_SIZE = 5
 MIN_SEGMENT_DURATION_MS = 10
+# VAD-based TTS compaction settings.  The dBFS trimmer below is kept only as
+# a defensive fallback when silero-vad/torch cannot be imported or the VAD pass
+# fails on a malformed file.
+TTS_VAD_ENABLED = True
+TTS_VAD_SAMPLE_RATE = 16000
+TTS_VAD_PAUSE_THRESHOLD_MS = 200
+TTS_VAD_PAUSE_KEEP_MS = 100
+TTS_VAD_HEAD_PAD_MS = 50
+TTS_VAD_TAIL_PAD_MS = 100
+TTS_VAD_MIN_SPEECH_MS = 80
+TTS_VAD_MIN_TOTAL_SAVED_MS = 40
+TTS_VAD_ALL_SILENCE_KEEP_MS = 50
+TTS_VAD_TAIL_ELONG_DETECT = True
+TTS_VAD_TAIL_ENERGY_RATIO = 0.35
+TTS_VAD_TAIL_SAFETY_MS = 80
+TTS_VAD_TAIL_MIN_CUT_MS = 500
+TTS_VAD_TAIL_WIN_MS = 50
+TTS_VAD_PLATEAU_DETECT = True
+TTS_VAD_PLATEAU_LOOKBACK_MS = 1100
+TTS_VAD_PLATEAU_KEEP_MS = 250
+TTS_VAD_PLATEAU_MIN_MS = 700
+TTS_VAD_PLATEAU_MIN_RATIO = 0.30
+TTS_VAD_PLATEAU_MAX_RATIO = 0.75
+TTS_VAD_PLATEAU_CV_RATIO = 0.18
+TTS_VAD_PLATEAU_REL_DROP_RATIO = 0.22
+TTS_VAD_REPETITION_DETECT = True
+TTS_VAD_REPETITION_MIN_SEG_MS = 900
+TTS_VAD_REPETITION_GAP_MS = 350
+TTS_VAD_REPETITION_LEN_TOL = 0.35
+
 TTS_SILENCE_TRIM_SEEK_STEP_MS = 10
 TTS_SILENCE_TRIM_MIN_SILENCE_MS = 80
 TTS_SILENCE_TRIM_LEADING_KEEP_MS = 80
@@ -34,6 +66,8 @@ TTS_SILENCE_TRIM_MAX_TRAILING_MS = 1000
 TTS_SILENCE_TRIM_NOISE_MARGIN_DB = 12.0
 TTS_SILENCE_TRIM_MIN_THRESHOLD_DBFS = -55.0
 TTS_SILENCE_TRIM_MAX_THRESHOLD_DBFS = -35.0
+
+_vad_lock = threading.Lock()
 
 def _wav_has_audio_frames(audio_file: str) -> bool:
     """Return True only when a WAV file contains at least one audio frame."""
@@ -49,6 +83,234 @@ def _ensure_non_empty_wav(audio_file: str) -> None:
         AudioSegment.silent(duration=MIN_SEGMENT_DURATION_MS).set_frame_rate(16000).set_channels(1).export(audio_file, format="wav")
         rprint(f"[yellow]Empty audio segment replaced with {MIN_SEGMENT_DURATION_MS}ms silence: {audio_file}[/yellow]")
 
+
+
+@lru_cache(maxsize=1)
+def _get_tts_vad_model():
+    """Load silero-vad lazily so importing this module does not require torch."""
+    from silero_vad import load_silero_vad
+    return load_silero_vad()
+
+
+def _audiosegment_to_float32_mono(audio: AudioSegment) -> np.ndarray:
+    """Convert a mono AudioSegment to float32 samples in [-1, 1]."""
+    samples = np.array(audio.get_array_of_samples())
+    if samples.size == 0:
+        return np.zeros(0, dtype=np.float32)
+
+    if audio.channels > 1:
+        samples = samples.reshape((-1, audio.channels)).mean(axis=1)
+
+    max_abs = float(1 << (8 * audio.sample_width - 1))
+    if max_abs <= 0:
+        max_abs = float(np.max(np.abs(samples)) or 1.0)
+    return (samples.astype(np.float32) / max_abs).clip(-1.0, 1.0)
+
+
+def _audiosegment_to_vad_samples(audio: AudioSegment) -> np.ndarray:
+    """Prepare 16 kHz mono float32 samples for silero-vad."""
+    vad_audio = audio.set_channels(1).set_frame_rate(TTS_VAD_SAMPLE_RATE).set_sample_width(2)
+    return _audiosegment_to_float32_mono(vad_audio)
+
+
+def _replace_audiosegment_wav(audio_file: str, audio: AudioSegment) -> None:
+    audio.export(audio_file, format="wav")
+    _ensure_non_empty_wav(audio_file)
+
+
+def _trim_tts_tail_elongation(audio: AudioSegment, segs: list[dict]) -> Optional[dict]:
+    """Shorten obvious held-vowel/repetition tails that VAD still marks as speech."""
+    if not segs:
+        return None
+
+    meta = None
+
+    if TTS_VAD_REPETITION_DETECT and len(segs) >= 2:
+        seg_lens = [float(s["end"] - s["start"]) for s in segs]
+        first_len = seg_lens[0]
+        if first_len * 1000 >= TTS_VAD_REPETITION_MIN_SEG_MS:
+            keep_mask = [True] * len(segs)
+            for j in range(1, len(segs)):
+                if seg_lens[j] * 1000 < TTS_VAD_REPETITION_MIN_SEG_MS:
+                    continue
+                gap_before = float(segs[j]["start"] - segs[j - 1]["end"])
+                len_diff = abs(seg_lens[j] - first_len) / max(seg_lens[j], first_len)
+                if (
+                    gap_before * 1000 <= TTS_VAD_REPETITION_GAP_MS
+                    and len_diff <= TTS_VAD_REPETITION_LEN_TOL
+                ):
+                    keep_mask[j] = False
+            if not all(keep_mask):
+                dropped = len(segs) - sum(keep_mask)
+                segs[:] = [s for s, keep in zip(segs, keep_mask) if keep]
+                meta = {"mode": "repetition", "dropped_segs": dropped}
+                if not segs:
+                    return meta
+
+    if not TTS_VAD_TAIL_ELONG_DETECT:
+        return meta
+
+    last = segs[-1]
+    sr = audio.frame_rate
+    mono = audio.set_channels(1)
+    samples = _audiosegment_to_float32_mono(mono)
+    start = max(0, int(float(last["start"]) * sr))
+    end = min(len(samples), int(float(last["end"]) * sr))
+    tail = samples[start:end]
+    if len(tail) <= int(0.3 * sr):
+        return meta
+
+    win = max(1, int(TTS_VAD_TAIL_WIN_MS / 1000 * sr))
+    n_win = len(tail) // win
+    if n_win <= 3:
+        return meta
+
+    energies = np.array([
+        float(np.sqrt(np.mean(tail[i * win:(i + 1) * win] ** 2)) + 1e-12)
+        for i in range(n_win)
+    ], dtype=np.float64)
+    peak = float(np.max(energies))
+    thresh = peak * TTS_VAD_TAIL_ENERGY_RATIO
+    loud = energies >= thresh
+    loud_idxs = np.where(loud)[0]
+    last_loud_idx = int(loud_idxs[-1]) if len(loud_idxs) else -1
+
+    if last_loud_idx >= 0:
+        cut_sample = start + (last_loud_idx + 1) * win + int(TTS_VAD_TAIL_SAFETY_MS / 1000 * sr)
+        removed_ms = (end - cut_sample) / sr * 1000
+        if removed_ms >= TTS_VAD_TAIL_MIN_CUT_MS:
+            last["end"] = max(float(last["start"]), cut_sample / sr)
+            meta = {
+                "mode": "fade",
+                "removed_ms": int(round(removed_ms)),
+                "peak_rms": round(peak, 4),
+                "thresh_rms": round(thresh, 4),
+            }
+
+    if TTS_VAD_PLATEAU_DETECT and peak > 1e-6 and last_loud_idx >= 0:
+        look_wins = max(1, int(round(TTS_VAD_PLATEAU_LOOKBACK_MS / TTS_VAD_TAIL_WIN_MS)))
+        keep_wins = max(1, int(round(TTS_VAD_PLATEAU_KEEP_MS / TTS_VAD_TAIL_WIN_MS)))
+        min_plateau_wins = max(1, int(round(TTS_VAD_PLATEAU_MIN_MS / TTS_VAD_TAIL_WIN_MS)))
+        plateau_end_idx = last_loud_idx + 1
+        start_min = max(0, plateau_end_idx - look_wins)
+        start_max = plateau_end_idx - min_plateau_wins
+        for start_idx in range(start_min, start_max + 1):
+            plateau = energies[start_idx:plateau_end_idx]
+            if len(plateau) < min_plateau_wins:
+                continue
+            ratios = plateau / peak
+            mean_ratio = float(np.mean(ratios))
+            cv = float(np.std(plateau) / (np.mean(plateau) + 1e-12))
+            rel_drop = float((plateau[0] - plateau[-1]) / (plateau[0] + 1e-12))
+            if (
+                TTS_VAD_PLATEAU_MIN_RATIO <= mean_ratio <= TTS_VAD_PLATEAU_MAX_RATIO
+                and cv <= TTS_VAD_PLATEAU_CV_RATIO
+                and abs(rel_drop) <= TTS_VAD_PLATEAU_REL_DROP_RATIO
+                and float(np.min(ratios)) >= TTS_VAD_PLATEAU_MIN_RATIO * 0.75
+                and float(np.max(ratios)) <= TTS_VAD_PLATEAU_MAX_RATIO * 1.15
+            ):
+                cut_win_idx = min(plateau_end_idx, start_idx + keep_wins)
+                cut_sample = start + cut_win_idx * win + int(TTS_VAD_TAIL_SAFETY_MS / 1000 * sr)
+                removed_ms = (end - cut_sample) / sr * 1000
+                if removed_ms >= TTS_VAD_TAIL_MIN_CUT_MS:
+                    last["end"] = max(float(last["start"]), cut_sample / sr)
+                    meta = {
+                        "mode": "plateau",
+                        "removed_ms": int(round(removed_ms)),
+                        "mean_ratio": round(mean_ratio, 3),
+                        "cv": round(cv, 3),
+                    }
+                    break
+
+    return meta
+
+
+def vad_compact_tts_audio(audio_file: str) -> bool:
+    """Compact generated TTS WAV in place using silero-vad.
+
+    It trims leading/trailing non-speech and compresses long internal pauses.
+    Returns True only when the WAV was rewritten.
+    """
+    if not TTS_VAD_ENABLED:
+        return False
+
+    audio = AudioSegment.from_wav(audio_file)
+    if len(audio) <= MIN_SEGMENT_DURATION_MS:
+        return False
+
+    vad_samples = _audiosegment_to_vad_samples(audio)
+    if vad_samples.size == 0:
+        placeholder = AudioSegment.silent(duration=TTS_VAD_ALL_SILENCE_KEEP_MS).set_frame_rate(16000).set_channels(1)
+        _replace_audiosegment_wav(audio_file, placeholder)
+        return True
+
+    import torch
+    from silero_vad import get_speech_timestamps
+
+    # Silero's torch/onnx session is loaded once and protected during inference;
+    # TTS generation can run in parallel threads.
+    with _vad_lock:
+        model = _get_tts_vad_model()
+        segs = get_speech_timestamps(
+            torch.from_numpy(vad_samples).float(),
+            model,
+            sampling_rate=TTS_VAD_SAMPLE_RATE,
+            min_speech_duration_ms=TTS_VAD_MIN_SPEECH_MS,
+            return_seconds=True,
+        )
+
+    orig_len_ms = len(audio)
+    if not segs:
+        placeholder = AudioSegment.silent(duration=TTS_VAD_ALL_SILENCE_KEEP_MS).set_frame_rate(audio.frame_rate).set_channels(audio.channels)
+        _replace_audiosegment_wav(audio_file, placeholder)
+        rprint(f"[yellow]VAD compacted TTS audio: {audio_file} all-silence -> {TTS_VAD_ALL_SILENCE_KEEP_MS}ms[/yellow]")
+        return True
+
+    segs = [dict(s) for s in segs]
+    tail_meta = _trim_tts_tail_elongation(audio, segs)
+
+    chunks: list[AudioSegment] = []
+    pauses_compressed = 0
+    pause_saved_ms = 0
+    for i, seg in enumerate(segs):
+        start_ms = int(round(float(seg["start"]) * 1000))
+        end_ms = int(round(float(seg["end"]) * 1000))
+        if i == 0:
+            start_ms = max(0, start_ms - TTS_VAD_HEAD_PAD_MS)
+        if i == len(segs) - 1:
+            end_ms = min(orig_len_ms, end_ms + TTS_VAD_TAIL_PAD_MS)
+        if end_ms > start_ms:
+            chunks.append(audio[start_ms:end_ms])
+
+        if i < len(segs) - 1:
+            pause_start_ms = int(round(float(seg["end"]) * 1000))
+            pause_end_ms = int(round(float(segs[i + 1]["start"]) * 1000))
+            pause_len_ms = max(0, pause_end_ms - pause_start_ms)
+            if pause_len_ms > TTS_VAD_PAUSE_THRESHOLD_MS:
+                chunks.append(AudioSegment.silent(duration=TTS_VAD_PAUSE_KEEP_MS, frame_rate=audio.frame_rate))
+                pauses_compressed += 1
+                pause_saved_ms += pause_len_ms - TTS_VAD_PAUSE_KEEP_MS
+            elif pause_len_ms > 0:
+                chunks.append(audio[pause_start_ms:pause_end_ms])
+
+    compacted = sum(chunks, AudioSegment.empty()) if chunks else AudioSegment.silent(duration=TTS_VAD_ALL_SILENCE_KEEP_MS, frame_rate=audio.frame_rate)
+    if len(compacted) <= 0:
+        compacted = AudioSegment.silent(duration=TTS_VAD_ALL_SILENCE_KEEP_MS, frame_rate=audio.frame_rate)
+
+    saved_ms = orig_len_ms - len(compacted)
+    if saved_ms < TTS_VAD_MIN_TOTAL_SAVED_MS and not tail_meta and pauses_compressed == 0:
+        return False
+
+    _replace_audiosegment_wav(audio_file, compacted)
+    msg = (
+        f"VAD compacted TTS audio: {audio_file} -{max(0, saved_ms)}ms "
+        f"(speech_segs={len(segs)}, pauses={pauses_compressed}, pause_saved={pause_saved_ms}ms"
+    )
+    if tail_meta:
+        msg += f", tail={tail_meta}"
+    msg += ")"
+    rprint(f"[dim]{msg}[/dim]")
+    return True
 
 
 def _estimate_tts_silence_threshold(audio: AudioSegment) -> float:
@@ -178,7 +440,12 @@ def process_row(row: pd.Series, tasks_df: pd.DataFrame) -> Tuple[int, float]:
         temp_file = TEMP_FILE_TEMPLATE.format(f"{number}_{line_index}")
         tts_main(line, temp_file, number, tasks_df)
         _ensure_non_empty_wav(temp_file)
-        trim_tts_leading_trailing_silence(temp_file)
+        try:
+            vad_compact_tts_audio(temp_file)
+        except Exception as e:
+            rprint(f"[yellow]Warning: VAD TTS compaction failed for {temp_file}, falling back to dBFS trim: {e}[/yellow]")
+            trim_tts_leading_trailing_silence(temp_file)
+        _ensure_non_empty_wav(temp_file)
         real_dur += get_audio_duration(temp_file)
     return number, real_dur
 

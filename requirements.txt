@@ -30,6 +30,7 @@ pyannote-audio>=4.0.0
 # to avoid torchaudio version conflicts between demucs (<2.2) and whisperx (~=2.8.0).
 # Both work fine with torchaudio 2.8+ at runtime (tested up to 2.8.0+cu128).
 whisperx>=3.8.1
+silero-vad>=6.0.0
 
 syllables
 pypinyin
