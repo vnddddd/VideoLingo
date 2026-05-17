@@ -48,6 +48,8 @@ class TaskRunner:
     _stop_event: threading.Event = field(default_factory=threading.Event)
     _thread: threading.Thread | None = None
     _steps: list = field(default_factory=list)
+    _stop_callbacks: list[Callable[[], None]] = field(default_factory=list)
+    _stop_callbacks_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self):
         self._pause_event.set()  # not paused initially
@@ -96,11 +98,37 @@ class TaskRunner:
             self.state = "running"
 
     def stop(self):
-        """Request stop. The task will halt before the next step."""
+        """Request stop and interrupt the currently running step if it registered cleanup."""
         if self.state in ("running", "paused"):
             self._stop_event.set()
             self._pause_event.set()  # unblock if paused so thread can exit
             self.state = "stopped"
+            callbacks = self._snapshot_stop_callbacks()
+            for callback in callbacks:
+                try:
+                    callback()
+                except Exception as exc:
+                    self.log(f"[WARN] Stop cleanup failed: {exc}")
+
+    def register_stop_callback(self, callback: Callable[[], None]) -> Callable[[], None]:
+        """Register cleanup to run when stop() is requested; returns an unregister function."""
+        with self._stop_callbacks_lock:
+            self._stop_callbacks.append(callback)
+        if self._stop_event.is_set():
+            callback()
+
+        def unregister() -> None:
+            with self._stop_callbacks_lock:
+                try:
+                    self._stop_callbacks.remove(callback)
+                except ValueError:
+                    pass
+
+        return unregister
+
+    def _snapshot_stop_callbacks(self) -> list[Callable[[], None]]:
+        with self._stop_callbacks_lock:
+            return list(self._stop_callbacks)
 
     def reset(self):
         """Reset to idle state (only when not running)."""
@@ -124,6 +152,10 @@ class TaskRunner:
     @property
     def is_active(self) -> bool:
         return self.state in ("running", "paused")
+
+    @property
+    def stop_requested(self) -> bool:
+        return self._stop_event.is_set()
 
     @property
     def is_done(self) -> bool:
@@ -166,6 +198,11 @@ class TaskRunner:
 
             self.log("[DONE] Task completed")
             self.state = "completed"
+        except StopTask as e:
+            self.error_msg = str(e)
+            if self.error_msg:
+                self.log(f"[STOPPED] {self.error_msg}")
+            self.state = "stopped"
         except Exception as e:
             self.error_msg = str(e)
             self.log(f"[ERROR] {self.error_msg}")

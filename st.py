@@ -1,7 +1,7 @@
 import streamlit as st
-import os, sys, time, subprocess
+import os, signal, sys, time, subprocess
 from core.st_utils.imports_and_utils import *
-from core.st_utils.task_runner import TaskRunner, get_current_runner
+from core.st_utils.task_runner import StopTask, TaskRunner, get_current_runner
 from core import *
 
 # SET PATH
@@ -16,6 +16,89 @@ DUB_VIDEO = "output/output_dub.mp4"
 SPLIT_RENDER_ZIP = "output/render_inputs.zip"
 
 
+def _current_process_identity() -> str | None:
+    """Best-effort identity token for our own PID; mirrors tools/split_pipeline.py logic."""
+    pid = os.getpid()
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            kernel32 = ctypes.windll.kernel32
+            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not handle:
+                return None
+            try:
+                creation = wintypes.FILETIME()
+                exit_t = wintypes.FILETIME()
+                kernel_t = wintypes.FILETIME()
+                user_t = wintypes.FILETIME()
+                ok = kernel32.GetProcessTimes(
+                    handle,
+                    ctypes.byref(creation),
+                    ctypes.byref(exit_t),
+                    ctypes.byref(kernel_t),
+                    ctypes.byref(user_t),
+                )
+                if not ok:
+                    return None
+                return f"{creation.dwHighDateTime:08x}{creation.dwLowDateTime:08x}"
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            return None
+
+    try:
+        stat_text = open(f"/proc/{pid}/stat", "r", encoding="utf-8", errors="replace").read()
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return "unknown"
+    fields = stat_text.rsplit(")", 1)[-1].strip().split()
+    if len(fields) >= 20:
+        return fields[19]
+    return "unknown"
+
+
+def _terminate_process_tree(process: subprocess.Popen, *, grace_seconds: float = 5.0) -> None:
+    """Terminate only the child process/group created for the current split command."""
+    if process.poll() is not None:
+        return
+
+    try:
+        if os.name == "nt":
+            process.terminate()
+        else:
+            os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except Exception:
+        process.terminate()
+
+    deadline = time.monotonic() + grace_seconds
+    while process.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.1)
+
+    if process.poll() is None:
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+            else:
+                os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except Exception:
+            process.kill()
+
+
 def _run_split_pipeline_command(*args: str) -> str:
     """Run tools/split_pipeline.py from the project root and let logs stream to the server terminal."""
     command = [sys.executable, "tools/split_pipeline.py", *args]
@@ -25,13 +108,41 @@ def _run_split_pipeline_command(*args: str) -> str:
     env.setdefault("PYTHONUTF8", "1")
     env.setdefault("PYTHONIOENCODING", "utf-8:replace")
     env.setdefault("PYTHONUNBUFFERED", "1")
+    env["VIDEOLINGO_PARENT_PID"] = str(os.getpid())
+    parent_identity = _current_process_identity()
+    if parent_identity:
+        env["VIDEOLINGO_PARENT_IDENTITY"] = parent_identity
 
-    process = subprocess.Popen(
-        command,
-        cwd=current_dir,
-        env=env,
-    )
-    returncode = process.wait()
+    popen_kwargs = {
+        "cwd": current_dir,
+        "env": env,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    process = subprocess.Popen(command, **popen_kwargs)
+    runner = get_current_runner()
+    unregister_stop_callback = None
+    if runner is not None:
+        unregister_stop_callback = runner.register_stop_callback(lambda: _terminate_process_tree(process))
+
+    try:
+        while True:
+            if runner is not None and runner.stop_requested:
+                _terminate_process_tree(process)
+                raise StopTask("split_pipeline stopped by user")
+            returncode = process.poll()
+            if returncode is not None:
+                break
+            time.sleep(0.2)
+    finally:
+        if unregister_stop_callback is not None:
+            unregister_stop_callback()
+
+    if runner is not None and runner.stop_requested:
+        raise StopTask("split_pipeline stopped by user")
     if returncode != 0:
         raise RuntimeError(f"split_pipeline failed with exit code {returncode}")
     return ""

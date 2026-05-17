@@ -31,8 +31,11 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import threading
+import time
 import zipfile
 from pathlib import Path
 from typing import Callable, Iterable, List, Sequence
@@ -58,6 +61,137 @@ for _stream in (sys.stdout, sys.stderr):
             _stream.reconfigure(errors="replace")
         except Exception:
             pass
+
+
+def _process_identity(pid: int) -> str | None:
+    """Return a best-effort process identity token so PID reuse does not fool the watchdog.
+
+    Windows: process creation FILETIME via ctypes (no external command, no wmic dependency).
+    POSIX:   field 22 (starttime) of /proc/<pid>/stat.
+    """
+    if pid <= 0:
+        return None
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            kernel32 = ctypes.windll.kernel32
+            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not handle:
+                return None
+            try:
+                creation = wintypes.FILETIME()
+                exit_t = wintypes.FILETIME()
+                kernel_t = wintypes.FILETIME()
+                user_t = wintypes.FILETIME()
+                ok = kernel32.GetProcessTimes(
+                    handle,
+                    ctypes.byref(creation),
+                    ctypes.byref(exit_t),
+                    ctypes.byref(kernel_t),
+                    ctypes.byref(user_t),
+                )
+                if not ok:
+                    return None
+                return f"{creation.dwHighDateTime:08x}{creation.dwLowDateTime:08x}"
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            return None
+
+    stat_path = Path(f"/proc/{pid}/stat")
+    try:
+        stat_text = stat_path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return "unknown"
+    fields = stat_text.rsplit(")", 1)[-1].strip().split()
+    if len(fields) >= 20:
+        # /proc/[pid]/stat field 22 (starttime) is stable for the lifetime of the process.
+        return fields[19]
+    return "unknown"
+
+
+def _process_alive(pid: int) -> bool:
+    """Lightweight PID-only liveness probe used as a safe fallback."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=5,
+            )
+        except Exception:
+            return True  # transient probe failure: assume alive, do not falsely kill child
+        return str(pid) in (result.stdout or "")
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return True
+
+
+def _process_matches(pid: int, identity: str | None) -> bool:
+    if not _process_alive(pid):
+        return False
+    if identity is None or identity == "unknown":
+        return True
+    current_identity = _process_identity(pid)
+    if current_identity is None or current_identity == "unknown":
+        # PID exists but we can't fingerprint right now; prefer keeping child alive over spurious kill.
+        return True
+    return current_identity == identity
+
+
+def _start_parent_watchdog() -> None:
+    """Exit this split CLI if the Streamlit parent process disappears or its PID is reused."""
+    parent_pid_text = os.environ.get("VIDEOLINGO_PARENT_PID")
+    if not parent_pid_text:
+        return
+    try:
+        parent_pid = int(parent_pid_text)
+    except ValueError:
+        return
+    if parent_pid <= 0 or parent_pid == os.getpid():
+        return
+
+    parent_identity = os.environ.get("VIDEOLINGO_PARENT_IDENTITY") or _process_identity(parent_pid)
+
+    def _watch() -> None:
+        while True:
+            time.sleep(2.0)
+            if not _process_matches(parent_pid, parent_identity):
+                print("[WARN] Parent VideoLingo process disappeared; stopping split pipeline.", file=sys.stderr, flush=True)
+                if os.name == "nt":
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/PID", str(os.getpid()), "/T", "/F"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            check=False,
+                        )
+                    finally:
+                        os._exit(130)
+                else:
+                    try:
+                        os.killpg(os.getpid(), signal.SIGTERM)
+                    except Exception:
+                        os._exit(130)
+
+    threading.Thread(target=_watch, name="videolingo-parent-watchdog", daemon=True).start()
 
 DUB_AUDIO_FILE = Path("output/dub.mp3")
 DUB_SUB_FILE = Path("output/dub.srt")
@@ -611,6 +745,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    _start_parent_watchdog()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
