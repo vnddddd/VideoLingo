@@ -1,12 +1,17 @@
 from pathlib import Path
 
-def custom_tts(text, save_path):
+def custom_tts(text, save_path, voice_cfg=None):
     """
     Custom TTS (Text-to-Speech) interface
     
     Args:
         text (str): Text to be converted to speech
         save_path (str): Path to save the audio file
+        voice_cfg (dict, optional): C4 speaker-router payload
+            ``{"method": str, "voice": str|None, "ref_wav": str|None,
+              "is_clone": bool}``. ``None`` means the legacy single-voice
+            behaviour. Implementations should consult ``voice_cfg["voice"]``
+            and (when supported) ``voice_cfg["ref_wav"]``/``voice_cfg["is_clone"]``.
         
     Returns:
         None

@@ -8,9 +8,18 @@ VOICE_LIST = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
 # voice options: alloy, echo, fable, onyx, nova, and shimmer
 # refer to: https://platform.openai.com/docs/guides/text-to-speech/quickstart
 @except_handler("Failed to generate audio using OpenAI TTS", retry=3, delay=1)
-def openai_tts(text, save_path):
+def openai_tts(text, save_path, voice_cfg=None):
+    """OpenAI (302.ai) TTS.
+
+    voice_cfg: optional dict from the C4 speaker router. When provided and
+    ``voice_cfg["voice"]`` is truthy, it overrides the global
+    ``openai_tts.voice`` config. Voice still must be in VOICE_LIST.
+    """
     API_KEY = load_key("openai_tts.api_key")
-    voice = load_key("openai_tts.voice")
+    if voice_cfg and voice_cfg.get("voice"):
+        voice = voice_cfg["voice"]
+    else:
+        voice = load_key("openai_tts.voice")
     payload = json.dumps({
         "model": "tts-1",
         "input": text,

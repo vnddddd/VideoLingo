@@ -134,19 +134,19 @@ def tts_main(text, save_as, number, task_df, speaker_id=None):
                 except Exception as ge:
                     print(f"GPT correction failed: {ge}; using original text for last attempt")
             if TTS_METHOD == 'openai_tts':
-                openai_tts(text, save_as)
+                openai_tts(text, save_as, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'gpt_sovits':
                 gpt_sovits_tts_for_videolingo(text, save_as, number, task_df)
             elif TTS_METHOD == 'fish_tts':
-                fish_tts(text, save_as)
+                fish_tts(text, save_as, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'azure_tts':
-                azure_tts(text, save_as)
+                azure_tts(text, save_as, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'sf_fish_tts':
                 siliconflow_fish_tts_for_videolingo(text, save_as, number, task_df)
             elif TTS_METHOD == 'edge_tts':
-                edge_tts(text, save_as)
+                edge_tts(text, save_as, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'custom_tts':
-                custom_tts(text, save_as)
+                custom_tts(text, save_as, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'sf_cosyvoice2':
                 cosyvoice_tts_for_videolingo(text, save_as, number, task_df)
             elif TTS_METHOD == 'f5tts':

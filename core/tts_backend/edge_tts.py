@@ -12,10 +12,19 @@ import subprocess
 # zh-CN-XiaoxiaoNeural - Female
 # zh-CN-YunxiNeural - Male
 # zh-CN-XiaoyiNeural - Female
-def edge_tts(text, save_path):
+def edge_tts(text, save_path, voice_cfg=None):
+    """Edge-TTS.
+
+    voice_cfg: optional dict from the C4 speaker router. When provided and
+    ``voice_cfg["voice"]`` is truthy, it overrides the global
+    ``edge_tts.voice`` config.
+    """
     # Load settings from config file
     edge_set = load_key("edge_tts")
-    voice = edge_set.get("voice", "en-US-JennyNeural")
+    if voice_cfg and voice_cfg.get("voice"):
+        voice = voice_cfg["voice"]
+    else:
+        voice = edge_set.get("voice", "en-US-JennyNeural")
     
     # Create output directory if it doesn't exist
     speech_file_path = Path(save_path)
