@@ -363,8 +363,21 @@ def cmd_prep_audio(args: argparse.Namespace) -> None:
 
         convert_video_to_audio(str(video))
 
+    # Respect the global demucs toggle in config.yaml. CLI --no-demucs has the
+    # highest priority; otherwise honor the "Vocal separation enhance" switch
+    # (load_key("demucs")) so disabling it in the UI/config really skips demucs
+    # everywhere, including this standalone prep-audio entry point.
+    from core.utils.config_utils import load_key
+
+    demucs_enabled = (not args.no_demucs) and bool(load_key("demucs"))
+
     if args.no_demucs:
         print("[SKIP] --no-demucs was set; only raw audio was prepared.")
+    elif not demucs_enabled:
+        print(
+            "[SKIP] demucs is disabled in config.yaml "
+            "(set 'demucs: true' to enable); only raw audio was prepared."
+        )
     elif VOCAL_AUDIO_FILE.exists() and BACKGROUND_AUDIO_FILE.exists():
         print(
             f"[SKIP] {_display_path(VOCAL_AUDIO_FILE)} and "
@@ -377,7 +390,7 @@ def cmd_prep_audio(args: argparse.Namespace) -> None:
         demucs_audio()
 
     required = [RAW_AUDIO_FILE]
-    if not args.no_demucs:
+    if demucs_enabled:
         required += [VOCAL_AUDIO_FILE, BACKGROUND_AUDIO_FILE]
     _require_files(required, "prep-audio output")
     _print_file_status(required, "prep-audio output")
