@@ -398,13 +398,14 @@ def cmd_prep_audio(args: argparse.Namespace) -> None:
 
 LOCAL_STEP_ALIASES = {
     "asr": 0,
-    "split": 1,
-    "translate": 2,
-    "subtitles": 3,
-    "timeline": 4,
-    "audio-tasks": 5,
-    "reference-audio": 6,
-    "tts-merge": 7,
+    "speaker-preview": 1,
+    "split": 2,
+    "translate": 3,
+    "subtitles": 4,
+    "timeline": 5,
+    "audio-tasks": 6,
+    "reference-audio": 7,
+    "tts-merge": 8,
 }
 
 
@@ -578,6 +579,28 @@ def _text_and_audio_steps() -> list[tuple[str, Callable[[], object]]]:
         _2_asr = _core_module("_2_asr")
         _run_if_missing("WhisperX word-level transcription", [CLEANED_CHUNKS_FILE], _2_asr.transcribe)
 
+    def speaker_preview_step() -> None:
+        """Generate per-speaker preview clips before sentence splitting.
+
+        - Skips silently when multi_speaker_enabled=false or only one speaker is present
+          (the helper module returns an empty manifest and clears any stale .pending flag).
+        - When >=2 speakers, writes output/preview/spk_N.wav + manifest.json + .pending,
+          then raises SystemExit(0) to let the Streamlit UI render the picker dialog.
+          SystemExit bypasses main()'s RuntimeError/FileNotFoundError catch so the process
+          exits 0 (a cooperative pause, not an error).
+        """
+        _3_speaker_preview = _core_module("_3_speaker_preview")
+        if not _3_speaker_preview.is_required():
+            print("[SKIP] Speaker preview: multi_speaker_enabled=false or <2 speakers detected.")
+            return
+        _3_speaker_preview.generate_previews()
+        if _3_speaker_preview.is_pending():
+            print(
+                "\n[PENDING] Multi-speaker picker required: open the Streamlit UI to "
+                "assign voices for each speaker, then re-run the pipeline to resume."
+            )
+            raise SystemExit(0)
+
     def split_subtitles() -> None:
         _5_split_sub = _core_module("_5_split_sub")
         _run_if_missing("Cut and align long subtitles", [SPLIT_SUB_FILE, REMERGED_FILE], _5_split_sub.split_for_sub_main)
@@ -588,6 +611,7 @@ def _text_and_audio_steps() -> list[tuple[str, Callable[[], object]]]:
 
     return [
         ("WhisperX word-level transcription", transcribe_step),
+        ("Speaker preview for multi-speaker picker", speaker_preview_step),
         ("Sentence segmentation using NLP and LLM", sentence_segmentation),
         ("Summarization and multi-step translation", summarize_and_translate),
         ("Cut and align long subtitles", split_subtitles),
