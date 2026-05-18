@@ -2,7 +2,9 @@ import streamlit as st
 import os, signal, sys, time, subprocess
 from core.st_utils.imports_and_utils import *
 from core.st_utils.task_runner import StopTask, TaskRunner, get_current_runner
+from core.st_utils.speaker_picker import render_speaker_picker_if_pending
 from core import *
+from core import _3_speaker_preview as _speaker_preview
 
 # SET PATH
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -101,6 +103,15 @@ def _terminate_process_tree(process: subprocess.Popen, *, grace_seconds: float =
 
 def _run_split_pipeline_command(*args: str) -> str:
     """Run tools/split_pipeline.py from the project root and let logs stream to the server terminal."""
+    # Multi-speaker picker gate: if a speaker preview is pending user input,
+    # halt the runner before launching ANY split_pipeline subprocess so the
+    # UI can render the picker. The runner enters "stopped" state cleanly;
+    # the user picks voices in the UI which clears the pending flag, then
+    # they can press the start button again to resume.
+    if _speaker_preview.is_pending():
+        raise StopTask(
+            "Speaker preview pending: pick voices in the UI before continuing."
+        )
     command = [sys.executable, "tools/split_pipeline.py", *args]
     print("$ " + " ".join(command), flush=True)
 
@@ -178,10 +189,28 @@ def _split_step(label: str, *args: str):
     return (label, lambda: _run_split_pipeline_command(*args))
 
 
+def _speaker_preview_inproc_step():
+    """In-process speaker preview step for the text-pipeline runner.
+
+    Runs only when multi-speaker is enabled in config. Writes the .pending
+    flag plus per-speaker wav/txt previews under output/preview/, then
+    raises StopTask so the runner halts cleanly and main() can render the
+    picker UI on the next Streamlit rerun.
+    """
+    if not _speaker_preview.is_required():
+        return
+    _speaker_preview.generate_previews()
+    if _speaker_preview.is_pending():
+        raise StopTask(
+            "Speaker preview pending: pick voices in the UI before continuing."
+        )
+
+
 def _split_local_resume_steps():
     """Expose local-stop-before-video as guarded sub-steps for pause/resume UI."""
     return [
         _split_step(t("WhisperX word-level transcription"), "local-step", "asr"),
+        _split_step(t("Speaker preview for multi-speaker picker"), "local-step", "speaker-preview"),
         _split_step(t("Sentence segmentation using NLP and LLM"), "local-step", "split"),
         _split_step(t("Summarization and multi-step translation"), "local-step", "translate"),
         _split_step(t("Cut and align long subtitles"), "local-step", "subtitles"),
@@ -273,6 +302,7 @@ def _get_text_steps():
     """Return the subtitle processing steps as (label, callable) list."""
     steps = [
         (t("WhisperX word-level transcription"), _2_asr.transcribe),
+        (t("Speaker preview for multi-speaker picker"), _speaker_preview_inproc_step),
         (
             t("Sentence segmentation using NLP and LLM"),
             lambda: (
@@ -474,6 +504,14 @@ def main():
         page_setting()
         st.markdown(give_star_button, unsafe_allow_html=True)
     download_video_section()
+    # Multi-speaker picker: if a speaker preview is pending (written by either
+    # the in-process text-pipeline step or the split_pipeline `speaker-preview`
+    # CLI step), render the picker UI in place of the pipeline sections so
+    # the user can audition each speaker and pick a voice / clone / default.
+    # confirm_picks() clears the pending flag; users then press the start
+    # button again to resume the pipeline.
+    if render_speaker_picker_if_pending():
+        return
     text_processing_section()
     audio_processing_section()
     split_pipeline_section()
