@@ -1,5 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from pydub.utils import mediainfo
+
 from core.utils import *
 from core.asr_backend.demucs_vl import demucs_audio
 from core.asr_backend.audio_preprocess import process_transcription, convert_video_to_audio, split_audio, save_results, normalize_audio_volume
@@ -32,8 +34,25 @@ def transcribe():
     else:
         vocal_audio = _RAW_AUDIO_FILE
 
-    # 3. Extract audio
-    segments = split_audio(_RAW_AUDIO_FILE)
+    # 3. Extract audio segments
+    # Multi-speaker mode (C2): ASR with diarization must see the whole audio in one
+    # shot. Otherwise Soniox "speaker 1" on clip A and "speaker 1" on clip B are
+    # NOT guaranteed to be the same person, so cross-clip merging would be wrong.
+    multi_speaker = False
+    try:
+        multi_speaker = bool(load_key("multi_speaker_enabled"))
+    except KeyError:
+        multi_speaker = False
+    asr_runtime_peek = load_key("whisper.runtime")
+    if multi_speaker and asr_runtime_peek in ("soniox", "elevenlabs"):
+        try:
+            duration = float(mediainfo(_RAW_AUDIO_FILE)["duration"])
+        except Exception:
+            duration = 0.0
+        segments = [(0.0, duration)]
+        rprint(f"[cyan]🎤 Multi-speaker mode: sending whole audio ({duration:.1f}s) to {asr_runtime_peek} in one shot[/cyan]")
+    else:
+        segments = split_audio(_RAW_AUDIO_FILE)
     
     # 4. Transcribe audio by clips
     runtime = load_key("whisper.runtime")

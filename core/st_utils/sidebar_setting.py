@@ -42,6 +42,28 @@ def _ensure_demucs_keys():
         pass
 
 
+def _ensure_multi_speaker_key():
+    """Idempotently insert `multi_speaker_enabled` default into config.yaml.
+
+    Newer code reads this top-level flag in the sidebar (and in _2_asr) to decide
+    whether the ASR backend should keep the audio intact for diarization. Older
+    config.yaml files won't have the key, so we seed it as False on first render.
+    """
+    try:
+        from core.utils.config_utils import CONFIG_PATH, lock, yaml as _yaml
+        with lock:
+            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                data = _yaml.load(f)
+            if data is None:
+                return
+            if 'multi_speaker_enabled' not in data:
+                data['multi_speaker_enabled'] = False
+                with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+                    _yaml.dump(data, f)
+    except Exception:
+        pass
+
+
 def config_input(label, key, help=None, placeholder=None):
     """Generic config input handler"""
     val = st.text_input(label, value=load_key(key), help=help, placeholder=placeholder)
@@ -104,6 +126,7 @@ def page_setting():
     # Make sure newly added demucs config keys exist so older config.yaml files
     # do not crash this UI on KeyError when load_key('demucs_backend') runs.
     _ensure_demucs_keys()
+    _ensure_multi_speaker_key()
 
     # Widen the sidebar slightly to accommodate the model searchbox
     st.markdown(
@@ -274,6 +297,41 @@ def page_setting():
             if soniox_diarize != load_key("whisper.soniox_diarize"):
                 update_key("whisper.soniox_diarize", soniox_diarize)
                 st.rerun()
+
+        # --- Multi-speaker (diarization) toggle ---
+        # Routes each detected speaker to its own TTS voice. Requires an ASR
+        # backend whose response carries speaker_id labels (Soniox / ElevenLabs).
+        # For unsupported backends we hard-disable the toggle and show a red
+        # helper, so users do not silently get an all-None speaker column.
+        ms_supported = runtime in ("soniox", "elevenlabs")
+        try:
+            ms_current = bool(load_key("multi_speaker_enabled"))
+        except Exception:
+            ms_current = False
+        multi_speaker_enabled = st.toggle(
+            t("Multi-speaker diarization"),
+            value=ms_current and ms_supported,
+            disabled=not ms_supported,
+            help=t(
+                "Detect different speakers and assign a distinct TTS voice to each. "
+                "Only works with Soniox or ElevenLabs (whose ASR returns speaker labels)."
+            ),
+        )
+        if not ms_supported and ms_current:
+            # Backend was switched to one that cannot diarize; auto-revert so
+            # downstream stages do not crash on missing speaker_id columns.
+            update_key("multi_speaker_enabled", False)
+            st.rerun()
+        elif ms_supported and multi_speaker_enabled != ms_current:
+            update_key("multi_speaker_enabled", multi_speaker_enabled)
+            st.rerun()
+        if not ms_supported:
+            st.markdown(
+                "<span style='color:#d32f2f;font-size:0.85em'>⚠️ "
+                + t("Current ASR backend does not support diarization; switch to Soniox or ElevenLabs.")
+                + "</span>",
+                unsafe_allow_html=True,
+            )
 
         asr_max_workers = st.number_input(
             t("ASR Clip Concurrency"),
