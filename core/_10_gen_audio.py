@@ -234,10 +234,18 @@ def process_row(row: pd.Series, tasks_df: pd.DataFrame) -> Tuple[int, float]:
     """Helper function for processing single row data"""
     number = row['number']
     lines = eval(row['lines']) if isinstance(row['lines'], str) else row['lines']
+    # 🎙️ multi-speaker (plan_multispeaker C4-S3): forward per-row speaker_id to
+    # tts_main so the router can pick the right voice/method. Column is created
+    # by _8_1_audio_task.py from the sidecar; absent or NaN ⇒ legacy single-voice.
+    speaker_id = None
+    if 'speaker_id' in row.index:
+        _sid = row['speaker_id']
+        if _sid is not None and not (isinstance(_sid, float) and pd.isna(_sid)):
+            speaker_id = _sid
     real_dur = 0
     for line_index, line in enumerate(lines):
         temp_file = TEMP_FILE_TEMPLATE.format(f"{number}_{line_index}")
-        tts_main(line, temp_file, number, tasks_df)
+        tts_main(line, temp_file, number, tasks_df, speaker_id=speaker_id)
         _ensure_non_empty_wav(temp_file)
         # silero-vad is the only TTS post-trimmer; any ImportError or model
         # failure propagates so the pipeline halts loudly instead of silently
