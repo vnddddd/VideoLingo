@@ -40,7 +40,16 @@ def clean_text_for_tts(text):
         text = text.replace(char, '')
     return text.strip()
 
-def tts_main(text, save_as, number, task_df):
+def tts_main(text, save_as, number, task_df, speaker_id=None):
+    """Generate a single audio clip via the configured TTS backend.
+
+    Multi-speaker routing (added in C4):
+        When `speaker_id` is provided AND `multi_speaker_enabled=true` AND the
+        speaker_picker has produced a `speaker_voice_map`, the per-speaker
+        config (method / voice / ref_wav) overrides the global tts_method for
+        this single call. When no override applies, behaviour is identical to
+        the pre-C4 single-voice pipeline (backwards-compatible default).
+    """
     text = clean_text_for_tts(text)
     # Check if text is empty or single character, single character voiceovers are prone to bugs
     cleaned_text = re.sub(r'[^\w\s]', '', text).strip()
@@ -80,7 +89,33 @@ def tts_main(text, save_as, number, task_df):
 
     print(f"Generating <{text}...>")
     TTS_METHOD = load_key("tts_method")
-    
+
+    # --- C4 multi-speaker routing ---
+    # When the caller passes a speaker_id, consult the per-speaker voice map
+    # populated by the Streamlit picker. The router returns None whenever the
+    # feature is disabled / sid is missing / entry is "default" / config is
+    # malformed, in which case we silently fall back to the global tts_method
+    # (legacy single-voice behaviour, fully backwards-compatible).
+    voice_cfg = None
+    # Truthy check: treat both None and empty-string as "no speaker_id given"
+    # so callers (e.g. ASR rows where the column is blank) don't trip routing.
+    if speaker_id:
+        try:
+            from core.utils.speaker_router import resolve_voice_cfg
+            voice_cfg = resolve_voice_cfg(speaker_id)
+        except Exception as e:  # noqa: BLE001 - never let routing break TTS
+            rprint(f"[yellow]🎤 tts_main: speaker_router lookup failed for "
+                   f"'{speaker_id}': {e}; falling back to global voice.[/yellow]")
+            voice_cfg = None
+    if voice_cfg is not None:
+        rprint(f"[cyan]🎤 tts_main: speaker '{speaker_id}' → "
+               f"method={voice_cfg['method']} clone={voice_cfg['is_clone']}[/cyan]")
+        TTS_METHOD = voice_cfg["method"]
+    # NOTE: voice_cfg is not yet forwarded into the backend calls below — that
+    # plumbing lands in C4/S4 once each backend signature has been extended to
+    # accept the kwarg. Until then only the method override is active, and
+    # callers that omit speaker_id see identical behaviour to before.
+
     max_retries = 3
     # Keep the shortest bad output as a fallback so we never hard-crash the pipeline
     fallback_blob = None
