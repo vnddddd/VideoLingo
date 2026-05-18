@@ -14,7 +14,20 @@ from core.tts_backend.custom_tts import custom_tts
 from core.prompts import get_correct_text_prompt
 from core.tts_backend._302_f5tts import f5_tts_for_videolingo
 from core.tts_backend.mimo_tts import mimo_tts_for_videolingo
+from core.tts_backend.estimate_duration import init_estimator, estimate_duration
 from core.utils import *
+
+# --- Bad TTS quality detection ---
+# Catches mid-utterance held vowels / slowdown that blow up the audio duration.
+# If a TTS attempt produces audio longer than expected_dur * TTS_BAD_DUR_RATIO,
+# the attempt is rejected and retried. After all retries fail, the shortest
+# bad output is kept as a fallback so the pipeline never hard-crashes.
+TTS_BAD_DUR_RATIO = 3.0
+TTS_BAD_DUR_MIN_EXPECTED = 0.5  # Floor for expected duration (seconds)
+
+# Lazy-initialized singleton (loading g2p_en is slow)
+_TTS_ESTIMATOR = None
+
 
 def clean_text_for_tts(text):
     """Remove problematic characters for TTS"""
@@ -33,20 +46,39 @@ def tts_main(text, save_as, number, task_df):
         rprint(f"Created silent audio for empty/single-char text: {save_as}")
         return
     
-    # Skip if file exists
+    # Skip if file exists (supports resume of interrupted runs)
     if os.path.exists(save_as):
         return
-    
+
+    # Estimate expected speech duration for bad-quality detection.
+    # If the TTS output is much longer than the linguistic estimate it almost
+    # always means the model held a vowel / slowed down / looped mid-utterance.
+    global _TTS_ESTIMATOR
+    if _TTS_ESTIMATOR is None:
+        _TTS_ESTIMATOR = init_estimator()
+    expected_dur = max(TTS_BAD_DUR_MIN_EXPECTED, estimate_duration(text, _TTS_ESTIMATOR))
+    bad_threshold = expected_dur * TTS_BAD_DUR_RATIO
+
     print(f"Generating <{text}...>")
     TTS_METHOD = load_key("tts_method")
     
     max_retries = 3
+    # Keep the shortest bad output as a fallback so we never hard-crash the pipeline
+    fallback_blob = None
+    fallback_dur = float('inf')
+
     for attempt in range(max_retries):
         try:
             if attempt >= max_retries - 1:
                 print("Asking GPT to correct text...")
-                correct_text = ask_gpt(get_correct_text_prompt(text),resp_type="json", log_title='tts_correct_text')
-                text = correct_text['text']
+                try:
+                    correct_text = ask_gpt(get_correct_text_prompt(text), resp_type="json", log_title='tts_correct_text')
+                    text = correct_text['text']
+                    # Recompute expected duration after GPT rewrite (length may differ)
+                    expected_dur = max(TTS_BAD_DUR_MIN_EXPECTED, estimate_duration(text, _TTS_ESTIMATOR))
+                    bad_threshold = expected_dur * TTS_BAD_DUR_RATIO
+                except Exception as ge:
+                    print(f"GPT correction failed: {ge}; using original text for last attempt")
             if TTS_METHOD == 'openai_tts':
                 openai_tts(text, save_as)
             elif TTS_METHOD == 'gpt_sovits':
@@ -70,18 +102,41 @@ def tts_main(text, save_as, number, task_df):
                 
             # Check generated audio duration
             duration = get_audio_duration(save_as)
-            if duration > 0:
-                break
-            else:
+            if duration <= 0:
                 if os.path.exists(save_as):
                     os.remove(save_as)
                 if attempt == max_retries - 1:
                     print(f"Warning: Generated audio duration is 0 for text: {text}")
-                    # Create silent audio file
                     silence = AudioSegment.silent(duration=100)  # 100ms silence
                     silence.export(save_as, format="wav")
                     return
-                print(f"Attempt {attempt + 1} failed, retrying...")
+                print(f"Attempt {attempt + 1} failed (empty), retrying...")
+                continue
+
+            # Bad-quality detection: catches held vowels / slowdown blowing up duration
+            if duration > bad_threshold:
+                # Remember the shortest bad output so far in case every retry is bad
+                if duration < fallback_dur:
+                    fallback_dur = duration
+                    try:
+                        with open(save_as, 'rb') as fb:
+                            fallback_blob = fb.read()
+                    except Exception:
+                        fallback_blob = None
+                rprint(f"[yellow][BadTTS] attempt {attempt + 1}/{max_retries}: dur={duration:.2f}s > {bad_threshold:.2f}s (expected {expected_dur:.2f}s x {TTS_BAD_DUR_RATIO}); retrying for: {text[:60]}[/yellow]")
+                if attempt < max_retries - 1:
+                    if os.path.exists(save_as):
+                        os.remove(save_as)
+                    continue
+                # Exhausted all retries: write back the shortest bad output as fallback
+                if fallback_blob is not None:
+                    with open(save_as, 'wb') as fb:
+                        fb.write(fallback_blob)
+                rprint(f"[red][BadTTS] gave up after {max_retries} attempts; using shortest fallback ({fallback_dur:.2f}s vs expected {expected_dur:.2f}s) for {save_as}[/red]")
+                return
+
+            # All good
+            return
         except Exception as e:
             if attempt == max_retries - 1:
                 raise Exception(f"Failed to generate audio after {max_retries} attempts: {str(e)}")
