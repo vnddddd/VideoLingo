@@ -22,7 +22,7 @@ from core.utils import *
 # If a TTS attempt produces audio longer than expected_dur * TTS_BAD_DUR_RATIO,
 # the attempt is rejected and retried. After all retries fail, the shortest
 # bad output is kept as a fallback so the pipeline never hard-crashes.
-TTS_BAD_DUR_RATIO = 3.0
+TTS_BAD_DUR_RATIO = 2.0
 TTS_BAD_DUR_MIN_EXPECTED = 0.5  # Floor for expected duration (seconds)
 # Re-check existing wavs on resume: drop & regenerate ones whose duration > bad_threshold.
 # Wavs left by an earlier run have already been VAD-trimmed by _10_gen_audio.py, so this

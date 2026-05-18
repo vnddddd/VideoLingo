@@ -5,7 +5,7 @@ import subprocess
 import wave
 import threading
 from functools import lru_cache
-from typing import Tuple, Optional
+from typing import Tuple
 
 import numpy as np
 import pandas as pd
@@ -37,23 +37,6 @@ TTS_VAD_TAIL_PAD_MS = 100
 TTS_VAD_MIN_SPEECH_MS = 80
 TTS_VAD_MIN_TOTAL_SAVED_MS = 40
 TTS_VAD_ALL_SILENCE_KEEP_MS = 50
-TTS_VAD_TAIL_ELONG_DETECT = True
-TTS_VAD_TAIL_ENERGY_RATIO = 0.35
-TTS_VAD_TAIL_SAFETY_MS = 80
-TTS_VAD_TAIL_MIN_CUT_MS = 500
-TTS_VAD_TAIL_WIN_MS = 50
-TTS_VAD_PLATEAU_DETECT = True
-TTS_VAD_PLATEAU_LOOKBACK_MS = 1100
-TTS_VAD_PLATEAU_KEEP_MS = 250
-TTS_VAD_PLATEAU_MIN_MS = 700
-TTS_VAD_PLATEAU_MIN_RATIO = 0.30
-TTS_VAD_PLATEAU_MAX_RATIO = 0.75
-TTS_VAD_PLATEAU_CV_RATIO = 0.18
-TTS_VAD_PLATEAU_REL_DROP_RATIO = 0.22
-TTS_VAD_REPETITION_DETECT = True
-TTS_VAD_REPETITION_MIN_SEG_MS = 900
-TTS_VAD_REPETITION_GAP_MS = 350
-TTS_VAD_REPETITION_LEN_TOL = 0.35
 
 _vad_lock = threading.Lock()
 
@@ -112,111 +95,6 @@ def _replace_audiosegment_wav(audio_file: str, audio: AudioSegment) -> None:
     _ensure_non_empty_wav(audio_file)
 
 
-def _trim_tts_tail_elongation(audio: AudioSegment, segs: list[dict]) -> Optional[dict]:
-    """Shorten obvious held-vowel/repetition tails that VAD still marks as speech."""
-    if not segs:
-        return None
-
-    meta = None
-
-    if TTS_VAD_REPETITION_DETECT and len(segs) >= 2:
-        seg_lens = [float(s["end"] - s["start"]) for s in segs]
-        first_len = seg_lens[0]
-        if first_len * 1000 >= TTS_VAD_REPETITION_MIN_SEG_MS:
-            keep_mask = [True] * len(segs)
-            for j in range(1, len(segs)):
-                if seg_lens[j] * 1000 < TTS_VAD_REPETITION_MIN_SEG_MS:
-                    continue
-                gap_before = float(segs[j]["start"] - segs[j - 1]["end"])
-                len_diff = abs(seg_lens[j] - first_len) / max(seg_lens[j], first_len)
-                if (
-                    gap_before * 1000 <= TTS_VAD_REPETITION_GAP_MS
-                    and len_diff <= TTS_VAD_REPETITION_LEN_TOL
-                ):
-                    keep_mask[j] = False
-            if not all(keep_mask):
-                dropped = len(segs) - sum(keep_mask)
-                segs[:] = [s for s, keep in zip(segs, keep_mask) if keep]
-                meta = {"mode": "repetition", "dropped_segs": dropped}
-                if not segs:
-                    return meta
-
-    if not TTS_VAD_TAIL_ELONG_DETECT:
-        return meta
-
-    last = segs[-1]
-    sr = audio.frame_rate
-    mono = audio.set_channels(1)
-    samples = _audiosegment_to_float32_mono(mono)
-    start = max(0, int(float(last["start"]) * sr))
-    end = min(len(samples), int(float(last["end"]) * sr))
-    tail = samples[start:end]
-    if len(tail) <= int(0.3 * sr):
-        return meta
-
-    win = max(1, int(TTS_VAD_TAIL_WIN_MS / 1000 * sr))
-    n_win = len(tail) // win
-    if n_win <= 3:
-        return meta
-
-    energies = np.array([
-        float(np.sqrt(np.mean(tail[i * win:(i + 1) * win] ** 2)) + 1e-12)
-        for i in range(n_win)
-    ], dtype=np.float64)
-    peak = float(np.max(energies))
-    thresh = peak * TTS_VAD_TAIL_ENERGY_RATIO
-    loud = energies >= thresh
-    loud_idxs = np.where(loud)[0]
-    last_loud_idx = int(loud_idxs[-1]) if len(loud_idxs) else -1
-
-    if last_loud_idx >= 0:
-        cut_sample = start + (last_loud_idx + 1) * win + int(TTS_VAD_TAIL_SAFETY_MS / 1000 * sr)
-        removed_ms = (end - cut_sample) / sr * 1000
-        if removed_ms >= TTS_VAD_TAIL_MIN_CUT_MS:
-            last["end"] = max(float(last["start"]), cut_sample / sr)
-            meta = {
-                "mode": "fade",
-                "removed_ms": int(round(removed_ms)),
-                "peak_rms": round(peak, 4),
-                "thresh_rms": round(thresh, 4),
-            }
-
-    if TTS_VAD_PLATEAU_DETECT and peak > 1e-6 and last_loud_idx >= 0:
-        look_wins = max(1, int(round(TTS_VAD_PLATEAU_LOOKBACK_MS / TTS_VAD_TAIL_WIN_MS)))
-        keep_wins = max(1, int(round(TTS_VAD_PLATEAU_KEEP_MS / TTS_VAD_TAIL_WIN_MS)))
-        min_plateau_wins = max(1, int(round(TTS_VAD_PLATEAU_MIN_MS / TTS_VAD_TAIL_WIN_MS)))
-        plateau_end_idx = last_loud_idx + 1
-        start_min = max(0, plateau_end_idx - look_wins)
-        start_max = plateau_end_idx - min_plateau_wins
-        for start_idx in range(start_min, start_max + 1):
-            plateau = energies[start_idx:plateau_end_idx]
-            if len(plateau) < min_plateau_wins:
-                continue
-            ratios = plateau / peak
-            mean_ratio = float(np.mean(ratios))
-            cv = float(np.std(plateau) / (np.mean(plateau) + 1e-12))
-            rel_drop = float((plateau[0] - plateau[-1]) / (plateau[0] + 1e-12))
-            if (
-                TTS_VAD_PLATEAU_MIN_RATIO <= mean_ratio <= TTS_VAD_PLATEAU_MAX_RATIO
-                and cv <= TTS_VAD_PLATEAU_CV_RATIO
-                and abs(rel_drop) <= TTS_VAD_PLATEAU_REL_DROP_RATIO
-                and float(np.min(ratios)) >= TTS_VAD_PLATEAU_MIN_RATIO * 0.75
-                and float(np.max(ratios)) <= TTS_VAD_PLATEAU_MAX_RATIO * 1.15
-            ):
-                cut_win_idx = min(plateau_end_idx, start_idx + keep_wins)
-                cut_sample = start + cut_win_idx * win + int(TTS_VAD_TAIL_SAFETY_MS / 1000 * sr)
-                removed_ms = (end - cut_sample) / sr * 1000
-                if removed_ms >= TTS_VAD_TAIL_MIN_CUT_MS:
-                    last["end"] = max(float(last["start"]), cut_sample / sr)
-                    meta = {
-                        "mode": "plateau",
-                        "removed_ms": int(round(removed_ms)),
-                        "mean_ratio": round(mean_ratio, 3),
-                        "cv": round(cv, 3),
-                    }
-                    break
-
-    return meta
 
 
 def vad_compact_tts_audio(audio_file: str) -> bool:
@@ -262,7 +140,6 @@ def vad_compact_tts_audio(audio_file: str) -> bool:
         return True
 
     segs = [dict(s) for s in segs]
-    tail_meta = _trim_tts_tail_elongation(audio, segs)
 
     chunks: list[AudioSegment] = []
     pauses_compressed = 0
@@ -293,7 +170,7 @@ def vad_compact_tts_audio(audio_file: str) -> bool:
         compacted = AudioSegment.silent(duration=TTS_VAD_ALL_SILENCE_KEEP_MS, frame_rate=audio.frame_rate)
 
     saved_ms = orig_len_ms - len(compacted)
-    if saved_ms < TTS_VAD_MIN_TOTAL_SAVED_MS and not tail_meta and pauses_compressed == 0:
+    if saved_ms < TTS_VAD_MIN_TOTAL_SAVED_MS and pauses_compressed == 0:
         rprint(
             f"[dim]VAD checked TTS audio: {audio_file} no trim "
             f"(saved={max(0, saved_ms)}ms < {TTS_VAD_MIN_TOTAL_SAVED_MS}ms threshold, "
@@ -302,14 +179,10 @@ def vad_compact_tts_audio(audio_file: str) -> bool:
         return False
 
     _replace_audiosegment_wav(audio_file, compacted)
-    msg = (
-        f"VAD compacted TTS audio: {audio_file} -{max(0, saved_ms)}ms "
-        f"(speech_segs={len(segs)}, pauses={pauses_compressed}, pause_saved={pause_saved_ms}ms"
+    rprint(
+        f"[dim]VAD compacted TTS audio: {audio_file} -{max(0, saved_ms)}ms "
+        f"(speech_segs={len(segs)}, pauses={pauses_compressed}, pause_saved={pause_saved_ms}ms)[/dim]"
     )
-    if tail_meta:
-        msg += f", tail={tail_meta}"
-    msg += ")"
-    rprint(f"[dim]{msg}[/dim]")
     return True
 
 
