@@ -14,6 +14,45 @@ from core.utils.decorator import except_handler
 LOCK = Lock()
 GPT_LOG_FOLDER = 'output/gpt_log'
 
+# ------------
+# OpenAI client cache (per api_key + base_url).
+# Reuses the underlying httpx connection pool across calls, which avoids paying
+# TCP + TLS handshake on every request. Handshake cost dominates wall-clock under
+# high concurrency on high-RTT links (e.g. local machine -> overseas API),
+# where re-building a client for each ask_gpt() invocation made 60 workers
+# behave almost serially. The OpenAI sync client is thread-safe.
+# ------------
+_CLIENT_CACHE = {}
+_CLIENT_LOCK = Lock()
+
+
+def _get_client():
+    api_key = load_key("api.key")
+    base_url = load_key("api.base_url")
+    if 'ark' in base_url:
+        base_url = "https://ark.cn-beijing.volces.com/api/v3"  # huoshan base url
+    elif 'v1' not in base_url:
+        base_url = base_url.strip('/') + '/v1'
+    cache_key = (api_key, base_url)
+    client = _CLIENT_CACHE.get(cache_key)
+    if client is not None:
+        return client
+    with _CLIENT_LOCK:
+        client = _CLIENT_CACHE.get(cache_key)
+        if client is None:
+            # Some API endpoints behind a CDN/WAF (e.g. Cloudflare) silently block
+            # requests whose User-Agent starts with "OpenAI/Python ...". Override
+            # it with a generic UA so the request behaves like a normal HTTP client.
+            client = OpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                default_headers={"User-Agent": "python-requests/2.32.3"},
+                timeout=load_timeout("llm", 300),
+            )
+            _CLIENT_CACHE[cache_key] = client
+        return client
+
+
 def _save_cache(model, prompt, resp_content, resp_type, resp, message=None, log_title="default"):
     with LOCK:
         logs = []
@@ -51,21 +90,7 @@ def ask_gpt(prompt, resp_type=None, valid_def=None, log_title="default"):
         return cached
 
     model = load_key("api.model")
-    base_url = load_key("api.base_url")
-    if 'ark' in base_url:
-        base_url = "https://ark.cn-beijing.volces.com/api/v3" # huoshan base url
-    elif 'v1' not in base_url:
-        base_url = base_url.strip('/') + '/v1'
-    # Some API endpoints behind a CDN/WAF (e.g. Cloudflare) silently block requests
-    # whose User-Agent starts with "OpenAI/Python ...". We override it with a generic
-    # UA so the request behaves like a normal HTTP client. This has no impact on
-    # standard OpenAI-compatible endpoints.
-    client = OpenAI(
-        api_key=load_key("api.key"),
-        base_url=base_url,
-        default_headers={"User-Agent": "python-requests/2.32.3"},
-        timeout=load_timeout("llm", 300),
-    )
+    client = _get_client()
     response_format = {"type": "json_object"} if resp_type == "json" and load_key("api.llm_support_json") else None
 
     messages = [{"role": "user", "content": prompt}]
