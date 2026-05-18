@@ -8,6 +8,9 @@
     "tech": {
       "title": "技术文档"
     },
+    "multi_speaker": {
+      "title": "多说话人配音"
+    },
     "docker": {
       "title": "Docker 文档"
     }

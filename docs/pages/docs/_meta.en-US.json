@@ -8,6 +8,9 @@
     "tech": {
       "title": "Tech"
     },
+    "multi_speaker": {
+      "title": "Multi-Speaker Dubbing"
+    },
     "docker": {
       "title": "Docker Installation"
     }
