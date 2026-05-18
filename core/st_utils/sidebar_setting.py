@@ -5,6 +5,43 @@ from translations.translations import DISPLAY_LANGUAGES
 from core.utils import *
 
 
+def _ensure_demucs_keys():
+    """Idempotently insert demucs_backend + hf_demucs defaults into config.yaml.
+
+    Needed because users pulling new code with an older config.yaml would crash
+    on the load_key('demucs_backend') / load_key('hf_demucs.hf_token') calls below.
+    Best-effort: any IO/parse error is swallowed (UI must not be blocked).
+    """
+    try:
+        from core.utils.config_utils import CONFIG_PATH, lock, yaml as _yaml
+        with lock:
+            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                data = _yaml.load(f)
+            if data is None:
+                return
+            changed = False
+            if 'demucs_backend' not in data:
+                data['demucs_backend'] = 'local'
+                changed = True
+            if 'hf_demucs' not in data or not isinstance(data.get('hf_demucs'), dict):
+                data['hf_demucs'] = {}
+                changed = True
+            hf_defaults = {
+                'space_id': 'abidlabs/music-separation',
+                'hf_token': '',
+                'api_name': '/predict',
+            }
+            for k, v in hf_defaults.items():
+                if k not in data['hf_demucs']:
+                    data['hf_demucs'][k] = v
+                    changed = True
+            if changed:
+                with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+                    _yaml.dump(data, f)
+    except Exception:
+        pass
+
+
 def config_input(label, key, help=None, placeholder=None):
     """Generic config input handler"""
     val = st.text_input(label, value=load_key(key), help=help, placeholder=placeholder)
@@ -64,6 +101,10 @@ def _search_models(search_term, **kwargs):
 
 
 def page_setting():
+    # Make sure newly added demucs config keys exist so older config.yaml files
+    # do not crash this UI on KeyError when load_key('demucs_backend') runs.
+    _ensure_demucs_keys()
+
     # Widen the sidebar slightly to accommodate the model searchbox
     st.markdown(
         """<style>[data-testid="stSidebar"] {min-width: 420px; max-width: 420px;}</style>""",
@@ -270,6 +311,49 @@ def page_setting():
         if demucs != load_key("demucs"):
             update_key("demucs", demucs)
             st.rerun()
+
+        if demucs:
+            backend_options = ["local", "hf_space"]
+            try:
+                cur_backend = load_key("demucs_backend")
+            except KeyError:
+                cur_backend = "local"
+            if cur_backend not in backend_options:
+                cur_backend = "local"
+            demucs_backend = st.radio(
+                t("Demucs Backend"),
+                options=backend_options,
+                index=backend_options.index(cur_backend),
+                horizontal=True,
+                help=t(
+                    "local: run htdemucs on this machine (needs CUDA GPU). "
+                    "hf_space: offload to a HuggingFace Space (free T4, ~1 min per 15 min video, needs HF token)."
+                ),
+                key="demucs_backend_radio",
+            )
+            if demucs_backend != cur_backend:
+                update_key("demucs_backend", demucs_backend)
+                st.rerun()
+
+            if demucs_backend == "hf_space":
+                try:
+                    cur_token = load_key("hf_demucs.hf_token") or ""
+                except KeyError:
+                    cur_token = ""
+                hf_token = st.text_input(
+                    t("HF Token"),
+                    value=cur_token,
+                    type="password",
+                    help=t(
+                        "Read-scope token from https://huggingface.co/settings/tokens. "
+                        "Saved only to your local config.yaml."
+                    ),
+                    placeholder="hf_xxxxxxxxxxxxxxx",
+                    key="hf_demucs_token_input",
+                )
+                if hf_token != cur_token:
+                    update_key("hf_demucs.hf_token", hf_token)
+                    st.rerun()
 
         burn_subtitles = st.toggle(
             t("Burn-in Subtitles"),
