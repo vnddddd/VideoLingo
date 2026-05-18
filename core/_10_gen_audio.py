@@ -440,71 +440,137 @@ def process_chunk(chunk_df: pd.DataFrame, accept: float, min_speed: float) -> tu
     return round(speed_factor, 3), keep_gaps
 
 def merge_chunks(tasks_df: pd.DataFrame) -> pd.DataFrame:
-    """Merge audio chunks and adjust timeline"""
+    """Merge audio chunks and adjust timeline.
+
+    Two-pass design (ffmpeg/ffprobe used to be the wall-clock bottleneck because
+    every chunk waited for the previous one to finish):
+      Pass 0 (plan): walk tasks_df once, decide chunk boundaries / speed_factor
+                     and collect every (temp -> output) ffmpeg job.
+      Pass 1 (parallel I/O): run all ``adjust_audio_speed`` +
+                     ``get_audio_duration`` calls through a ThreadPoolExecutor
+                     and cache durations keyed by (number, line_index).
+      Pass 2 (serial timeline): replay the original chunk loop but, instead of
+                     spawning ffmpeg, look up cached durations and accumulate
+                     ``cur_time``.  This step is pure arithmetic so a single
+                     thread is plenty and the resulting timeline is bit-exact
+                     identical to the legacy serial implementation.
+    """
     rprint("[bold blue]Starting audio chunks processing...[/bold blue]")
     accept = load_key("speed_factor.accept")
     min_speed = load_key("speed_factor.min")
-    chunk_start = 0
-    
+
     tasks_df['new_sub_times'] = None
-    
+
+    # ── Pass 0: plan chunks and enumerate every ffmpeg job up front ─────────
+    chunk_plans = []   # [{start_idx, end_idx, chunk_df, speed_factor, keep_gaps}, ...]
+    jobs = []          # [(number, line_index, temp_file, output_file, speed_factor), ...]
+    chunk_start = 0
     for index, row in tasks_df.iterrows():
-        if row['cut_off'] == 1:
-            chunk_df = tasks_df.iloc[chunk_start:index+1].reset_index(drop=True)
-            speed_factor, keep_gaps = process_chunk(chunk_df, accept, min_speed)
-            
-            # Step1: Start processing new timeline
-            chunk_start_time = parse_df_srt_time(chunk_df.iloc[0]['start_time'])
-            chunk_end_time = parse_df_srt_time(chunk_df.iloc[-1]['end_time']) + chunk_df.iloc[-1]['tolerance'] # 加上tolerance才是这一块的结束
-            cur_time = chunk_start_time
-            for i, row in chunk_df.iterrows():
-                # If i is not 0, which is not the first row of the chunk, cur_time needs to be added with the gap of the previous row, remember to divide by speed_factor
-                if i != 0 and keep_gaps:
-                    cur_time += chunk_df.iloc[i-1]['gap']/speed_factor
-                new_sub_times = []
-                number = row['number']
-                lines = eval(row['lines']) if isinstance(row['lines'], str) else row['lines']
-                for line_index, line in enumerate(lines):
-                    # Step2: Start speed change and save as OUTPUT_FILE_TEMPLATE
-                    temp_file = TEMP_FILE_TEMPLATE.format(f"{number}_{line_index}")
-                    output_file = OUTPUT_FILE_TEMPLATE.format(f"{number}_{line_index}")
-                    adjust_audio_speed(temp_file, output_file, speed_factor)
-                    ad_dur = get_audio_duration(output_file)
-                    new_sub_times.append([cur_time, cur_time+ad_dur])
-                    cur_time += ad_dur
-                # Step3: Find corresponding main DataFrame index and update new_sub_times
-                main_df_idx = tasks_df[tasks_df['number'] == row['number']].index[0]
-                tasks_df.at[main_df_idx, 'new_sub_times'] = new_sub_times
-                # Step4: Choose emoji based on speed_factor and accept comparison
-                emoji = "FAST" if speed_factor <= accept else "Warning:"
-                rprint(f"[cyan]{emoji} Processed chunk {chunk_start} to {index} with speed factor {speed_factor}[/cyan]")
-            # Step5: Check if the last row exceeds the range
-            if cur_time > chunk_end_time:
-                time_diff = cur_time - chunk_end_time
-                if time_diff <= 0.6:  # If exceeding time is within 0.6 seconds, truncate the last audio
-                    rprint(f"[yellow]Warning: Chunk {chunk_start} to {index} exceeds by {time_diff:.3f}s, truncating last audio[/yellow]")
-                    # Get the last audio file
-                    last_number = tasks_df.iloc[index]['number']
-                    last_lines = eval(tasks_df.iloc[index]['lines']) if isinstance(tasks_df.iloc[index]['lines'], str) else tasks_df.iloc[index]['lines']
-                    last_line_index = len(last_lines) - 1
-                    last_file = OUTPUT_FILE_TEMPLATE.format(f"{last_number}_{last_line_index}")
-                    
-                    # Calculate the duration to keep
-                    audio = AudioSegment.from_wav(last_file)
-                    original_duration = len(audio) / 1000  # Convert to seconds
-                    new_duration = original_duration - time_diff
-                    trimmed_audio = audio[:(new_duration * 1000)]  # pydub uses milliseconds
-                    trimmed_audio.export(last_file, format="wav")
-                    _ensure_non_empty_wav(last_file)
-                    
-                    # Update the last timestamp
-                    last_times = tasks_df.at[index, 'new_sub_times']
-                    last_times[-1][1] = chunk_end_time
-                    tasks_df.at[index, 'new_sub_times'] = last_times
-                else:
-                    raise Exception(f"Chunk {chunk_start} to {index} exceeds the chunk end time {chunk_end_time:.2f} seconds with current time {cur_time:.2f} seconds")
-            chunk_start = index+1
-    
+        if row['cut_off'] != 1:
+            continue
+        chunk_df = tasks_df.iloc[chunk_start:index + 1].reset_index(drop=True)
+        speed_factor, keep_gaps = process_chunk(chunk_df, accept, min_speed)
+        chunk_plans.append({
+            'start_idx': chunk_start,
+            'end_idx': index,
+            'chunk_df': chunk_df,
+            'speed_factor': speed_factor,
+            'keep_gaps': keep_gaps,
+        })
+        for _, r in chunk_df.iterrows():
+            number = r['number']
+            lines = eval(r['lines']) if isinstance(r['lines'], str) else r['lines']
+            for line_index, _line in enumerate(lines):
+                jobs.append((
+                    number,
+                    line_index,
+                    TEMP_FILE_TEMPLATE.format(f"{number}_{line_index}"),
+                    OUTPUT_FILE_TEMPLATE.format(f"{number}_{line_index}"),
+                    speed_factor,
+                ))
+        chunk_start = index + 1
+
+    # ── Pass 1: parallel ffmpeg atempo + ffprobe duration probe ─────────────
+    # ffmpeg_max_workers controls just this stage; falls back to the shared
+    # ``max_workers`` (default 4) so existing configs keep working unchanged.
+    max_workers = load_positive_int(
+        "ffmpeg_max_workers", fallback_key="max_workers", default=4
+    )
+    durations: dict = {}
+
+    def _do_one(job):
+        number, line_index, temp_file, output_file, sf = job
+        adjust_audio_speed(temp_file, output_file, sf)
+        ad_dur = get_audio_duration(output_file)
+        return (number, line_index), ad_dur
+
+    if jobs:
+        rprint(f"[blue]Adjusting {len(jobs)} audio segment(s) with {max_workers} parallel worker(s)...[/blue]")
+        with Progress() as progress:
+            task = progress.add_task("[cyan]Adjusting audio speed...", total=len(jobs))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(_do_one, j) for j in jobs]
+                for future in as_completed(futures):
+                    key, ad_dur = future.result()  # let exceptions surface
+                    durations[key] = ad_dur
+                    progress.advance(task)
+
+    # ── Pass 2: serial timeline accumulation (dict lookups + arithmetic) ────
+    for plan in chunk_plans:
+        chunk_start = plan['start_idx']
+        index = plan['end_idx']
+        chunk_df = plan['chunk_df']
+        speed_factor = plan['speed_factor']
+        keep_gaps = plan['keep_gaps']
+
+        # Step1: Start processing new timeline
+        chunk_start_time = parse_df_srt_time(chunk_df.iloc[0]['start_time'])
+        chunk_end_time = parse_df_srt_time(chunk_df.iloc[-1]['end_time']) + chunk_df.iloc[-1]['tolerance']  # 加上tolerance才是这一块的结束
+        cur_time = chunk_start_time
+        for i, row in chunk_df.iterrows():
+            # If i is not 0, which is not the first row of the chunk, cur_time needs to be added with the gap of the previous row, remember to divide by speed_factor
+            if i != 0 and keep_gaps:
+                cur_time += chunk_df.iloc[i - 1]['gap'] / speed_factor
+            new_sub_times = []
+            number = row['number']
+            lines = eval(row['lines']) if isinstance(row['lines'], str) else row['lines']
+            for line_index, _line in enumerate(lines):
+                # Step2: Look up the duration produced by Pass 1 (ffmpeg already ran)
+                ad_dur = durations[(number, line_index)]
+                new_sub_times.append([cur_time, cur_time + ad_dur])
+                cur_time += ad_dur
+            # Step3: Find corresponding main DataFrame index and update new_sub_times
+            main_df_idx = tasks_df[tasks_df['number'] == number].index[0]
+            tasks_df.at[main_df_idx, 'new_sub_times'] = new_sub_times
+            # Step4: Choose emoji based on speed_factor and accept comparison
+            emoji = "FAST" if speed_factor <= accept else "Warning:"
+            rprint(f"[cyan]{emoji} Processed chunk {chunk_start} to {index} with speed factor {speed_factor}[/cyan]")
+        # Step5: Check if the last row exceeds the range
+        if cur_time > chunk_end_time:
+            time_diff = cur_time - chunk_end_time
+            if time_diff <= 0.6:  # If exceeding time is within 0.6 seconds, truncate the last audio
+                rprint(f"[yellow]Warning: Chunk {chunk_start} to {index} exceeds by {time_diff:.3f}s, truncating last audio[/yellow]")
+                # Get the last audio file
+                last_number = tasks_df.iloc[index]['number']
+                last_lines = eval(tasks_df.iloc[index]['lines']) if isinstance(tasks_df.iloc[index]['lines'], str) else tasks_df.iloc[index]['lines']
+                last_line_index = len(last_lines) - 1
+                last_file = OUTPUT_FILE_TEMPLATE.format(f"{last_number}_{last_line_index}")
+
+                # Calculate the duration to keep
+                audio = AudioSegment.from_wav(last_file)
+                original_duration = len(audio) / 1000  # Convert to seconds
+                new_duration = original_duration - time_diff
+                trimmed_audio = audio[:(new_duration * 1000)]  # pydub uses milliseconds
+                trimmed_audio.export(last_file, format="wav")
+                _ensure_non_empty_wav(last_file)
+
+                # Update the last timestamp
+                last_times = tasks_df.at[index, 'new_sub_times']
+                last_times[-1][1] = chunk_end_time
+                tasks_df.at[index, 'new_sub_times'] = last_times
+            else:
+                raise Exception(f"Chunk {chunk_start} to {index} exceeds the chunk end time {chunk_end_time:.2f} seconds with current time {cur_time:.2f} seconds")
+
     rprint("[bold green]OK: Audio chunks processing completed![/bold green]")
     return tasks_df
 
