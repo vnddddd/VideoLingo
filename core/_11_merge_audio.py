@@ -49,23 +49,21 @@ def process_audio_segment(audio_file, fallback_duration_ms=100):
     except (wave.Error, EOFError, FileNotFoundError) as exc:
         raise RuntimeError(f"Invalid audio segment {audio_file}: {exc}") from exc
 
-    temp_file = f"{audio_file}_temp.mp3"
-    ffmpeg_cmd = [
-        'ffmpeg', '-y',
-        '-i', audio_file,
-        '-ar', '16000',
-        '-ac', '1',
-        '-b:a', '64k',
-        temp_file
-    ]
-    result = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace')
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed to convert {audio_file}: {result.stderr}")
-    try:
-        audio_segment = AudioSegment.from_mp3(temp_file)
-    finally:
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
+    # Decode the wav directly with pydub.  The previous detour
+    # (ffmpeg wav -> temp.mp3, then AudioSegment.from_mp3) blew up on
+    # very short clips: the 50ms silent fallback produced by VAD / the
+    # empty-or-single-char-text branch encoded to a <1KB mp3, and
+    # ffmpeg's mp3 demuxer then aborted with
+    # "Failed to read frame size: Could not seek to 1026 / Invalid argument".
+    # pydub's wav reader handles 1-frame files just fine, and the final
+    # `merged_audio.export(format="mp3", parameters=["-b:a","64k"])`
+    # below already re-encodes everything to the same target format,
+    # so the intermediate mp3 was pure waste anyway.
+    audio_segment = (
+        AudioSegment.from_wav(audio_file)
+        .set_frame_rate(16000)
+        .set_channels(1)
+    )
     return audio_segment
 
 def merge_audio_segments(audios, new_sub_times, sample_rate):
