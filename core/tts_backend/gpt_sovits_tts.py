@@ -53,7 +53,7 @@ def gpt_sovits_tts(text, text_lang, save_path, ref_audio_path, prompt_lang, prom
         rprint(f"[bold red]TTS request failed, status code:[/bold red] {response.status_code}")
         return False
 
-def gpt_sovits_tts_for_videolingo(text, save_as, number, task_df):
+def gpt_sovits_tts_for_videolingo(text, save_as, number, task_df, voice_cfg=None):
     start_gpt_sovits_server()
     TARGET_LANGUAGE = load_key("target_language")
     WHISPER_LANGUAGE = load_key("whisper.language")
@@ -64,6 +64,13 @@ def gpt_sovits_tts_for_videolingo(text, save_as, number, task_df):
     current_dir = Path.cwd()
     prompt_lang = load_key("whisper.detected_language") if WHISPER_LANGUAGE == 'auto' else WHISPER_LANGUAGE
     prompt_text = task_df.loc[task_df['number'] == number, 'origin'].values[0]
+
+    # Multi-speaker clone short-circuit: bypass the REFER_MODE chain when
+    # a per-speaker reference clip was resolved by speaker_router.
+    if voice_cfg and voice_cfg.get("is_clone") and voice_cfg.get("ref_wav"):
+        ref_audio_path = Path(voice_cfg["ref_wav"])
+        gpt_sovits_tts(text, TARGET_LANGUAGE, save_as, ref_audio_path, prompt_lang, prompt_text)
+        return
 
     if REFER_MODE == 1:
         # Use the default reference audio from config

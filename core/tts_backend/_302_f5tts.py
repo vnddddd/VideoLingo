@@ -117,18 +117,37 @@ def _get_ref_audio(task_df, min_duration=8, max_duration=14.5) -> str:
     
     return combined_audio
 
-def f5_tts_for_videolingo(text: str, save_as: str, number: int, task_df):
+# Per-speaker clone reference URL cache (separate from the default
+# UPLOADED_REFER_URL to avoid the multi-speaker URL-collision bug).
+_CLONE_REFER_URLS = {}
+
+
+def f5_tts_for_videolingo(text: str, save_as: str, number: int, task_df, voice_cfg=None):
     global UPLOADED_REFER_URL
-    
-    # Only process the reference audio if we haven't uploaded it yet
-    if UPLOADED_REFER_URL is None:
-        refer_path = _get_ref_audio(task_df)
-        normalized_refer_path = normalize_audio_volume(refer_path, f"{_AUDIO_REFERS_DIR}/refer_normalized.wav")
-        UPLOADED_REFER_URL = upload_file_to_302(normalized_refer_path)
-        rprint(f"[green]✅ Reference audio uploaded, URL cached for reuse")
-    
+
+    # Multi-speaker clone path: cache one URL per ref_wav source so
+    # different speakers don't overwrite each other's reference.
+    if voice_cfg and voice_cfg.get("is_clone") and voice_cfg.get("ref_wav"):
+        ref_wav = voice_cfg["ref_wav"]
+        if ref_wav not in _CLONE_REFER_URLS:
+            normalized = normalize_audio_volume(
+                ref_wav,
+                f"{_AUDIO_REFERS_DIR}/refer_normalized_clone_{Path(ref_wav).stem}.wav",
+            )
+            _CLONE_REFER_URLS[ref_wav] = upload_file_to_302(normalized)
+            rprint(f"[green]✅ Clone reference uploaded for {ref_wav}")
+        refer_url = _CLONE_REFER_URLS[ref_wav]
+    else:
+        # Default path: merged refer from task_df (shared cache).
+        if UPLOADED_REFER_URL is None:
+            refer_path = _get_ref_audio(task_df)
+            normalized_refer_path = normalize_audio_volume(refer_path, f"{_AUDIO_REFERS_DIR}/refer_normalized.wav")
+            UPLOADED_REFER_URL = upload_file_to_302(normalized_refer_path)
+            rprint(f"[green]✅ Reference audio uploaded, URL cached for reuse")
+        refer_url = UPLOADED_REFER_URL
+
     try:
-        success = _f5_tts(text=text, refer_url=UPLOADED_REFER_URL, save_path=save_as)
+        success = _f5_tts(text=text, refer_url=refer_url, save_path=save_as)
         return success
     except Exception as e:
         print(f"Error in f5_tts_for_videolingo: {str(e)}")

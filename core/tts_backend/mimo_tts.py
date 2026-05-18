@@ -206,7 +206,7 @@ def _safe_load_key(key: str, default=None):
 # ---------------------------------------------------------------------------
 
 @except_handler("Failed to generate audio using Xiaomi MiMo TTS")
-def mimo_tts_for_videolingo(text, save_as, number=0, task_df=None):
+def mimo_tts_for_videolingo(text, save_as, number=0, task_df=None, voice_cfg=None):
     """Production entry. Signature aligned with sf_cosyvoice2 family for
     ``tts_main`` dispatch.
 
@@ -215,6 +215,11 @@ def mimo_tts_for_videolingo(text, save_as, number=0, task_df=None):
       * "mimo-v2.5-tts-voicedesign"→ uses ``mimo_tts.voice_description``
       * "mimo-v2.5-tts-voiceclone" → auto-loads output/audio/refers/{number}.wav
         (re-using the reference audio already extracted by VL step _9_refer_audio)
+
+    When ``voice_cfg`` has ``is_clone=True`` and a ``ref_wav`` path, the
+    model is forced to voiceclone and the per-speaker reference clip is
+    used instead of the per-segment refers/{n}.wav. This enables the
+    multi-speaker cloning flow driven by speaker_router.
 
     ``task_df`` is accepted for signature compat but unused (MiMo voiceclone,
     unlike SiliconFlow CosyVoice2, does NOT require a reference transcript).
@@ -229,6 +234,12 @@ def mimo_tts_for_videolingo(text, save_as, number=0, task_df=None):
     base_url = _safe_load_key("mimo_tts.base_url", DEFAULT_BASE_URL)
     model = _safe_load_key("mimo_tts.model", "mimo-v2.5-tts")
 
+    # Multi-speaker clone override: force voiceclone model regardless of
+    # the configured default when voice_cfg requests cloning.
+    clone_override = bool(voice_cfg and voice_cfg.get("is_clone") and voice_cfg.get("ref_wav"))
+    if clone_override:
+        model = "mimo-v2.5-tts-voiceclone"
+
     kwargs = {}
     if model == "mimo-v2.5-tts":
         kwargs["voice"] = _safe_load_key("mimo_tts.voice", "Chloe")
@@ -237,20 +248,24 @@ def mimo_tts_for_videolingo(text, save_as, number=0, task_df=None):
             "mimo_tts.voice_description", "A natural, neutral voice."
         )
     elif model == "mimo-v2.5-tts-voiceclone":
-        # Reuse the reference audio that VL pipeline already extracted in
-        # step _9_refer_audio. Same fallback chain as sf_cosyvoice2.
-        current_dir = Path.cwd()
-        ref_audio_path = current_dir / f"output/audio/refers/{number}.wav"
-        if not ref_audio_path.exists():
-            ref_audio_path = current_dir / "output/audio/refers/1.wav"
+        if clone_override:
+            # Use the per-speaker reference clip from speaker_router.
+            ref_audio_path = Path(voice_cfg["ref_wav"])
+        else:
+            # Reuse the reference audio that VL pipeline already extracted in
+            # step _9_refer_audio. Same fallback chain as sf_cosyvoice2.
+            current_dir = Path.cwd()
+            ref_audio_path = current_dir / f"output/audio/refers/{number}.wav"
             if not ref_audio_path.exists():
-                try:
-                    from core._9_refer_audio import extract_refer_audio_main
-                    print(f"参考音频文件不存在，尝试提取: {ref_audio_path}")
-                    extract_refer_audio_main()
-                except Exception as e:
-                    print(f"提取参考音频失败: {e}")
-                    raise
+                ref_audio_path = current_dir / "output/audio/refers/1.wav"
+                if not ref_audio_path.exists():
+                    try:
+                        from core._9_refer_audio import extract_refer_audio_main
+                        print(f"参考音频文件不存在，尝试提取: {ref_audio_path}")
+                        extract_refer_audio_main()
+                    except Exception as e:
+                        print(f"提取参考音频失败: {e}")
+                        raise
         kwargs["voice_ref_dataurl"] = _wav_to_dataurl(ref_audio_path)
     else:
         raise ValueError(

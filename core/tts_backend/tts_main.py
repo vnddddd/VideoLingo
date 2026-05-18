@@ -111,10 +111,9 @@ def tts_main(text, save_as, number, task_df, speaker_id=None):
         rprint(f"[cyan]🎤 tts_main: speaker '{speaker_id}' → "
                f"method={voice_cfg['method']} clone={voice_cfg['is_clone']}[/cyan]")
         TTS_METHOD = voice_cfg["method"]
-    # NOTE: voice_cfg is not yet forwarded into the backend calls below — that
-    # plumbing lands in C4/S4 once each backend signature has been extended to
-    # accept the kwarg. Until then only the method override is active, and
-    # callers that omit speaker_id see identical behaviour to before.
+    # voice_cfg is forwarded into every backend call below; each *_for_videolingo
+    # signature accepts voice_cfg=None as the legacy default, so single-voice
+    # callers (speaker_id == None) get identical behaviour to pre-C4.
 
     max_retries = 3
     # Keep the shortest bad output as a fallback so we never hard-crash the pipeline
@@ -136,23 +135,23 @@ def tts_main(text, save_as, number, task_df, speaker_id=None):
             if TTS_METHOD == 'openai_tts':
                 openai_tts(text, save_as, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'gpt_sovits':
-                gpt_sovits_tts_for_videolingo(text, save_as, number, task_df)
+                gpt_sovits_tts_for_videolingo(text, save_as, number, task_df, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'fish_tts':
                 fish_tts(text, save_as, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'azure_tts':
                 azure_tts(text, save_as, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'sf_fish_tts':
-                siliconflow_fish_tts_for_videolingo(text, save_as, number, task_df)
+                siliconflow_fish_tts_for_videolingo(text, save_as, number, task_df, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'edge_tts':
                 edge_tts(text, save_as, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'custom_tts':
                 custom_tts(text, save_as, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'sf_cosyvoice2':
-                cosyvoice_tts_for_videolingo(text, save_as, number, task_df)
+                cosyvoice_tts_for_videolingo(text, save_as, number, task_df, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'f5tts':
-                f5_tts_for_videolingo(text, save_as, number, task_df)
+                f5_tts_for_videolingo(text, save_as, number, task_df, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'mimo_tts':
-                mimo_tts_for_videolingo(text, save_as, number, task_df)
+                mimo_tts_for_videolingo(text, save_as, number, task_df, voice_cfg=voice_cfg)
                 
             # Check generated audio duration
             duration = get_audio_duration(save_as)

@@ -177,7 +177,26 @@ def get_ref_audio(task_df):
     
     return combined_audio, combined_text
 
-def siliconflow_fish_tts_for_videolingo(text, save_as, number, task_df):
+def siliconflow_fish_tts_for_videolingo(text, save_as, number, task_df, voice_cfg=None):
+    # Multi-speaker clone short-circuit: force dynamic mode with the
+    # per-speaker reference clip resolved by speaker_router. We use a
+    # generic placeholder for ref_text since per-speaker transcripts
+    # aren't tracked in voice_cfg yet (sf_fish dynamic mode is lenient
+    # about transcript accuracy for short clips).
+    if voice_cfg and voice_cfg.get("is_clone") and voice_cfg.get("ref_wav"):
+        ref_audio = voice_cfg["ref_wav"]
+        if not Path(ref_audio).exists():
+            rprint(f"[red]Clone reference not found: {ref_audio}, falling back to preset mode")
+            return siliconflow_fish_tts(text, save_as, mode="preset")
+        ref_text = voice_cfg.get("ref_text") or "This is a reference audio for voice cloning."
+        return siliconflow_fish_tts(
+            text=text,
+            save_path=save_as,
+            mode="dynamic",
+            ref_audio=str(ref_audio),
+            ref_text=ref_text,
+        )
+
     sf_fish_set = load_key("sf_fish_tts")
     MODE = sf_fish_set["mode"]
 

@@ -10,24 +10,31 @@ def wav_to_base64(wav_file_path):
     return base64_audio
 
 @except_handler("Failed to generate audio using SiliconFlow TTS")
-def cosyvoice_tts_for_videolingo(text, save_as, number, task_df):
+def cosyvoice_tts_for_videolingo(text, save_as, number, task_df, voice_cfg=None):
     prompt_text = task_df.loc[task_df['number'] == number, 'origin'].values[0]
     API_KEY = load_key("sf_cosyvoice2.api_key")
-    # 设置参考音频路径
-    current_dir = Path.cwd()
-    ref_audio_path = current_dir / f"output/audio/refers/{number}.wav"
-    
-    # 如果参考音频不存在，使用第一个音频作为备选
-    if not ref_audio_path.exists():
-        ref_audio_path = current_dir / "output/audio/refers/1.wav"
+
+    # Multi-speaker clone short-circuit: when voice_cfg requests clone,
+    # use the per-speaker reference clip resolved by speaker_router
+    # instead of the per-segment refers/{n}.wav extracted by step _9.
+    if voice_cfg and voice_cfg.get("is_clone") and voice_cfg.get("ref_wav"):
+        ref_audio_path = Path(voice_cfg["ref_wav"])
+    else:
+        # 设置参考音频路径
+        current_dir = Path.cwd()
+        ref_audio_path = current_dir / f"output/audio/refers/{number}.wav"
+
+        # 如果参考音频不存在，使用第一个音频作为备选
         if not ref_audio_path.exists():
-            try:
-                from core._9_refer_audio import extract_refer_audio_main
-                print(f"参考音频文件不存在，尝试提取: {ref_audio_path}")
-                extract_refer_audio_main()
-            except Exception as e:
-                print(f"提取参考音频失败: {str(e)}")
-                raise
+            ref_audio_path = current_dir / "output/audio/refers/1.wav"
+            if not ref_audio_path.exists():
+                try:
+                    from core._9_refer_audio import extract_refer_audio_main
+                    print(f"参考音频文件不存在，尝试提取: {ref_audio_path}")
+                    extract_refer_audio_main()
+                except Exception as e:
+                    print(f"提取参考音频失败: {str(e)}")
+                    raise
 
     reference_base64 = wav_to_base64(ref_audio_path)
     client = OpenAI(api_key=API_KEY, base_url="https://api.siliconflow.cn/v1", timeout=load_timeout("tts", 60))
