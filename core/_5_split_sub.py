@@ -58,11 +58,17 @@ def align_subs(src_sub: str, tr_sub: str, src_part: str) -> Tuple[List[str], Lis
     
     return src_parts, tr_parts, tr_remerged
 
-def split_align_subs(src_lines: List[str], tr_lines: List[str]):
+def split_align_subs(src_lines: List[str], tr_lines: List[str], speaker_lines: List = None):
+    """🎙️ multi-speaker support (see plan_multispeaker):
+    `speaker_lines` is an optional parallel list aligned with src_lines. When a line is
+    split into N parts, every part inherits the original line's speaker_id.
+    Returns (src, tr, remerged) when speaker_lines is None, else (src, tr, remerged, spk).
+    """
     subtitle_set = load_key("subtitle")
     MAX_SUB_LENGTH = subtitle_set["max_length"]
     TARGET_SUB_MULTIPLIER = subtitle_set["target_multiplier"]
     remerged_tr_lines = tr_lines.copy()
+    spk_lines = list(speaker_lines) if speaker_lines is not None else None
     
     to_split = []
     for i, (src, tr) in enumerate(zip(src_lines, tr_lines)):
@@ -83,6 +89,9 @@ def split_align_subs(src_lines: List[str], tr_lines: List[str]):
         src_lines[i] = src_parts
         tr_lines[i] = tr_parts
         remerged_tr_lines[i] = tr_remerged
+        if spk_lines is not None:
+            # propagate parent's speaker_id to every split part
+            spk_lines[i] = [spk_lines[i]] * len(src_parts)
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=load_positive_int("api.max_workers", fallback_key="max_workers", default=1)) as executor:
         executor.map(process, to_split)
@@ -91,7 +100,10 @@ def split_align_subs(src_lines: List[str], tr_lines: List[str]):
     src_lines = [item for sublist in src_lines for item in (sublist if isinstance(sublist, list) else [sublist])]
     tr_lines = [item for sublist in tr_lines for item in (sublist if isinstance(sublist, list) else [sublist])]
     
-    return src_lines, tr_lines, remerged_tr_lines
+    if spk_lines is None:
+        return src_lines, tr_lines, remerged_tr_lines
+    spk_lines = [item for sublist in spk_lines for item in (sublist if isinstance(sublist, list) else [sublist])]
+    return src_lines, tr_lines, remerged_tr_lines, spk_lines
 
 def split_for_sub_main():
     console.print("[bold green]🚀 Start splitting subtitles...[/bold green]")
@@ -99,6 +111,10 @@ def split_for_sub_main():
     df = pd.read_excel(_4_2_TRANSLATION)
     src = df['Source'].tolist()
     trans = df['Translation'].tolist()
+    # 🎙️ multi-speaker support (see plan_multispeaker): keep speaker_id in lockstep
+    has_speakers = 'speaker_id' in df.columns
+    spk = df['speaker_id'].tolist() if has_speakers else None
+    split_spk = spk  # default for "break on attempt 1" path
     
     subtitle_set = load_key("subtitle")
     MAX_SUB_LENGTH = subtitle_set["max_length"]
@@ -106,24 +122,37 @@ def split_for_sub_main():
     
     for attempt in range(3):  # 多次切割
         console.print(Panel(f"🔄 Split attempt {attempt + 1}", expand=False))
-        split_src, split_trans, remerged = split_align_subs(src.copy(), trans)
+        if has_speakers:
+            split_src, split_trans, remerged, split_spk = split_align_subs(src.copy(), trans, spk)
+        else:
+            split_src, split_trans, remerged = split_align_subs(src.copy(), trans)
         
         # 检查是否所有字幕都符合长度要求
-        if all(len(src) <= MAX_SUB_LENGTH for src in split_src) and \
+        if all(len(s) <= MAX_SUB_LENGTH for s in split_src) and \
            all(calc_len(tr) * TARGET_SUB_MULTIPLIER <= MAX_SUB_LENGTH for tr in split_trans):
             break
         
         # 更新源数据继续下一轮分割
         src, trans = split_src, split_trans
+        if has_speakers:
+            spk = split_spk
 
     # 确保二者有相同的长度，防止报错
     if len(src) > len(remerged):
         remerged += [None] * (len(src) - len(remerged))
     elif len(remerged) > len(src):
-        src += [None] * (len(remerged) - len(src))
+        pad_n = len(remerged) - len(src)
+        src += [None] * pad_n
+        if has_speakers:
+            spk += [None] * pad_n
     
-    pd.DataFrame({'Source': split_src, 'Translation': split_trans}).to_excel(_5_SPLIT_SUB, index=False)
-    pd.DataFrame({'Source': src, 'Translation': remerged}).to_excel(_5_REMERGED, index=False)
+    df_split = pd.DataFrame({'Source': split_src, 'Translation': split_trans})
+    df_remerged = pd.DataFrame({'Source': src, 'Translation': remerged})
+    if has_speakers:
+        df_split['speaker_id'] = split_spk
+        df_remerged['speaker_id'] = spk
+    df_split.to_excel(_5_SPLIT_SUB, index=False)
+    df_remerged.to_excel(_5_REMERGED, index=False)
 
 if __name__ == '__main__':
     split_for_sub_main()

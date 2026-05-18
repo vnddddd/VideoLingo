@@ -58,6 +58,21 @@ def process_srt():
     with open(SRC_SUBS_FOR_AUDIO_FILE, 'r', encoding='utf-8') as src_file:
         src_content = src_file.read()
     
+    # 🎙️ multi-speaker support (see plan_multispeaker): load per-line speaker_id sidecar
+    # written by core/_6_gen_sub.py align_timestamp_main. Absent → single-speaker fallback.
+    audio_speakers = {}
+    try:
+        spk_df = pd.read_excel(_AUDIO_SPEAKERS)
+        if 'number' in spk_df.columns and 'speaker_id' in spk_df.columns:
+            for _, row in spk_df.iterrows():
+                num = row['number']
+                if pd.notna(num):
+                    audio_speakers[int(num)] = row['speaker_id']
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        rprint(f"[yellow]⚠️ Failed to load speaker sidecar {_AUDIO_SPEAKERS}: {e}[/yellow]")
+    
     subtitles = []
     src_subtitles = {}
     
@@ -91,11 +106,14 @@ def process_srt():
             # Add the original text from src_subs_for_audio.srt
             origin = src_subtitles.get(number, '')
 
+            # 🎙️ multi-speaker support: pull per-line speaker_id from sidecar (None when absent)
+            speaker = audio_speakers.get(number) if audio_speakers else None
+
         except ValueError as e:
             rprint(Panel(f"Unable to parse subtitle block '{block}', error: {str(e)}, skipping this subtitle block.", title="Error", border_style="red"))
             continue
         
-        subtitles.append({'number': number, 'start_time': start_time, 'end_time': end_time, 'duration': duration, 'text': text, 'origin': origin})
+        subtitles.append({'number': number, 'start_time': start_time, 'end_time': end_time, 'duration': duration, 'text': text, 'origin': origin, 'speaker_id': speaker})
     
     df = pd.DataFrame(subtitles)
     
@@ -106,6 +124,11 @@ def process_srt():
         if df.loc[i, 'duration'] < MIN_SUB_DUR:
             if i < len(df) - 1 and time_diff_seconds(df.loc[i, 'start_time'],df.loc[i+1, 'start_time'],today) < MIN_SUB_DUR:
                 rprint(f"[bold yellow]Merging subtitles {i+1} and {i+2}[/bold yellow]")
+                # 🎙️ multi-speaker support: keep main row's speaker_id; warn on cross-speaker merge
+                if 'speaker_id' in df.columns:
+                    a, b = df.loc[i, 'speaker_id'], df.loc[i+1, 'speaker_id']
+                    if pd.notna(a) and pd.notna(b) and a != b:
+                        rprint(f"[yellow]⚠️ Cross-speaker merge at sub {i+1}: '{a}' + '{b}', keeping '{a}'[/yellow]")
                 df.loc[i, 'text'] += ' ' + df.loc[i+1, 'text']
                 df.loc[i, 'origin'] += ' ' + df.loc[i+1, 'origin']
                 df.loc[i, 'end_time'] = df.loc[i+1, 'end_time']

@@ -11,6 +11,7 @@ _5_SPLIT_SUB = "output/log/translation_results_for_subtitles.xlsx"
 _5_REMERGED = "output/log/translation_results_remerged.xlsx"
 
 _8_1_AUDIO_TASK = "output/audio/tts_tasks.xlsx"
+_AUDIO_SPEAKERS = "output/audio/audio_speakers.xlsx"  # sidecar: number -> speaker_id, written by _6 audio align
 
 
 # ------------------------------------------
@@ -38,6 +39,7 @@ __all__ = [
     "_5_SPLIT_SUB",
     "_5_REMERGED",
     "_8_1_AUDIO_TASK",
+    "_AUDIO_SPEAKERS",
     "_OUTPUT_DIR",
     "_AUDIO_DIR",
     "_RAW_AUDIO_FILE",

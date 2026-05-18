@@ -58,6 +58,7 @@ def show_difference(str1, str2):
 
 def get_sentence_timestamps(df_words, df_sentences):
     time_stamp_list = []
+    word_idx_list = []  # 🎙️ per-sentence (start_word_idx, end_word_idx) for speaker attribution
     
     # Build complete string and position mapping
     full_words_str = ''
@@ -85,6 +86,7 @@ def get_sentence_timestamps(df_words, df_sentences):
                     float(df_words['start'][start_word_idx]),
                     float(df_words['end'][end_word_idx])
                 ))
+                word_idx_list.append((start_word_idx, end_word_idx))
                 
                 current_pos += sentence_len
                 match_found = True
@@ -98,7 +100,7 @@ def get_sentence_timestamps(df_words, df_sentences):
             print("\nOriginal sentence:", df_sentences['Source'][idx])
             raise ValueError("❎ No match found for sentence.")
     
-    return time_stamp_list
+    return time_stamp_list, word_idx_list
 
 def align_timestamp(df_text, df_translate, subtitle_output_configs: list, output_dir: str, for_display: bool = True):
     """Align timestamps and add a new timestamp column to df_translate"""
@@ -110,9 +112,28 @@ def align_timestamp(df_text, df_translate, subtitle_output_configs: list, output
     words['id'] = words['id'].astype(int)
 
     # Process timestamps ⏰
-    time_stamp_list = get_sentence_timestamps(df_text, df_translate)
+    time_stamp_list, word_idx_list = get_sentence_timestamps(df_text, df_translate)
     df_trans_time['timestamp'] = time_stamp_list
     df_trans_time['duration'] = df_trans_time['timestamp'].apply(lambda x: x[1] - x[0])
+
+    # 🎙️ Speaker attribution (multi-speaker support, see plan_multispeaker).
+    # When df_text carries `speaker_id` (Soniox diarization) we aggregate per-sentence
+    # by word-duration weighted vote and attach to df_trans_time['speaker_id'].
+    # Backends without diarization simply skip this — fully backward compatible.
+    if 'speaker_id' in df_text.columns:
+        speaker_ids_per_sentence = []
+        for (start_idx, end_idx) in word_idx_list:
+            votes = {}
+            for w_idx in range(start_idx, end_idx + 1):
+                spk = df_text['speaker_id'].iloc[w_idx]
+                if pd.isna(spk):
+                    continue
+                w_start = float(df_text['start'].iloc[w_idx])
+                w_end = float(df_text['end'].iloc[w_idx])
+                w_dur = max(w_end - w_start, 0.001)  # floor so very short words still vote
+                votes[spk] = votes.get(spk, 0.0) + w_dur
+            speaker_ids_per_sentence.append(max(votes, key=votes.get) if votes else None)
+        df_trans_time['speaker_id'] = speaker_ids_per_sentence
 
     # Remove gaps 🕳️
     for i in range(len(df_trans_time)-1):
@@ -160,8 +181,21 @@ def align_timestamp_main():
     df_translate_for_audio = pd.read_excel(_5_REMERGED) # use remerged file to avoid unmatched lines when dubbing
     df_translate_for_audio['Translation'] = df_translate_for_audio['Translation'].apply(clean_translation)
     
-    align_timestamp(df_text, df_translate_for_audio, AUDIO_SUBTITLE_OUTPUT_CONFIGS, _AUDIO_DIR)
+    df_audio_time = align_timestamp(df_text, df_translate_for_audio, AUDIO_SUBTITLE_OUTPUT_CONFIGS, _AUDIO_DIR)
     console.print(Panel(f"[bold green]🎉📝 Audio subtitles generation completed! Please check in the `{_AUDIO_DIR}` folder 👀[/bold green]"))
+
+    # 🎙️ Speaker sidecar (multi-speaker, see plan_multispeaker).
+    # Persist number(1-based)->speaker_id alongside the audio srt so _8_1 process_srt
+    # can join it back without polluting the .srt format. Skipped silently when the
+    # ASR backend doesn't provide speaker_id.
+    if 'speaker_id' in df_audio_time.columns:
+        os.makedirs(_AUDIO_DIR, exist_ok=True)
+        df_speakers = pd.DataFrame({
+            'number': range(1, len(df_audio_time) + 1),
+            'speaker_id': df_audio_time['speaker_id'].values,
+        })
+        df_speakers.to_excel(_AUDIO_SPEAKERS, index=False)
+        console.print(f"[cyan]🎙️ Speaker sidecar saved → {_AUDIO_SPEAKERS}[/cyan]")
     
 
 if __name__ == '__main__':
