@@ -497,10 +497,14 @@ def page_setting():
                 update_key("mimo_tts.model", sel_mimo_model)
                 st.rerun()
             if sel_mimo_model == "mimo-v2.5-tts":
+                # Source: live API response (2026-05-18). Older voices
+                # (Sophia/Hannah/Jacob/Owen/Ethan/可乐) have been retired
+                # server-side; new additions: mimo_default/苏打/白桦/Mia/Milo/Dean.
                 mimo_voices = [
-                    "Chloe", "Sophia", "Hannah",
-                    "Jacob", "Owen", "Ethan",
-                    "冰糖", "茉莉", "可乐",
+                    "mimo_default",
+                    "冰糖", "茉莉", "苏打", "白桦",
+                    "Mia", "Chloe",
+                    "Milo", "Dean",
                 ]
                 mimo_cur_voice = load_key("mimo_tts.voice")
                 sel_mimo_voice = st.selectbox(

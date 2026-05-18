@@ -37,14 +37,18 @@ from core.utils import load_key, except_handler, load_timeout
 DEFAULT_BASE_URL = "https://token-plan-sgp.xiaomimimo.com/v1"
 
 # Built-in preset voices for mimo-v2.5-tts (model A).
-# Source: platform.xiaomimimo.com/docs/zh-CN/api/audio/tts-v2.5
+# Source: live API response (2026-05-18). The earlier docs list
+# (Sophia/Hannah/Jacob/Owen/Ethan/可乐) is obsolete — those voices
+# have been retired server-side; mimo_default/苏打/白桦/Mia/Milo/Dean
+# are the new additions.
 PRESET_VOICES = [
-    # English female
-    "Chloe", "Sophia", "Hannah",
-    # English male
-    "Jacob", "Owen", "Ethan",
+    "mimo_default",
     # Chinese
-    "冰糖", "茉莉", "可乐",
+    "冰糖", "茉莉", "苏打", "白桦",
+    # English female
+    "Mia", "Chloe",
+    # English male
+    "Milo", "Dean",
 ]
 
 SUPPORTED_MODELS = (
