@@ -24,6 +24,10 @@ from core.utils import *
 # bad output is kept as a fallback so the pipeline never hard-crashes.
 TTS_BAD_DUR_RATIO = 3.0
 TTS_BAD_DUR_MIN_EXPECTED = 0.5  # Floor for expected duration (seconds)
+# Re-check existing wavs on resume: drop & regenerate ones whose duration > bad_threshold.
+# Wavs left by an earlier run have already been VAD-trimmed by _10_gen_audio.py, so this
+# only catches the mid-utterance held-vowel / slowdown failures that VAD cannot fix.
+TTS_RESCAN_BAD_ON_RESUME = True
 
 # Lazy-initialized singleton (loading g2p_en is slow)
 _TTS_ESTIMATOR = None
@@ -46,11 +50,8 @@ def tts_main(text, save_as, number, task_df):
         rprint(f"Created silent audio for empty/single-char text: {save_as}")
         return
     
-    # Skip if file exists (supports resume of interrupted runs)
-    if os.path.exists(save_as):
-        return
-
-    # Estimate expected speech duration for bad-quality detection.
+    # Estimate expected speech duration for bad-quality detection
+    # (used both for new generations and to rescan existing wavs on resume).
     # If the TTS output is much longer than the linguistic estimate it almost
     # always means the model held a vowel / slowed down / looped mid-utterance.
     global _TTS_ESTIMATOR
@@ -58,6 +59,24 @@ def tts_main(text, save_as, number, task_df):
         _TTS_ESTIMATOR = init_estimator()
     expected_dur = max(TTS_BAD_DUR_MIN_EXPECTED, estimate_duration(text, _TTS_ESTIMATOR))
     bad_threshold = expected_dur * TTS_BAD_DUR_RATIO
+
+    # Resume: skip iff the existing wav looks OK; drop bad leftovers so the
+    # normal retry loop below regenerates them.
+    if os.path.exists(save_as):
+        if not TTS_RESCAN_BAD_ON_RESUME:
+            return
+        try:
+            existing_dur = get_audio_duration(save_as)
+            if existing_dur <= bad_threshold:
+                return
+            rprint(f"[yellow][BadTTS-rescan] {save_as} dur={existing_dur:.2f}s > {bad_threshold:.2f}s (expected {expected_dur:.2f}s); regenerating[/yellow]")
+            os.remove(save_as)
+        except Exception as e:
+            rprint(f"[yellow][BadTTS-rescan] cannot probe {save_as} ({e}); regenerating[/yellow]")
+            try:
+                os.remove(save_as)
+            except Exception:
+                pass
 
     print(f"Generating <{text}...>")
     TTS_METHOD = load_key("tts_method")
