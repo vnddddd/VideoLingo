@@ -110,12 +110,21 @@ def _demucs_via_hf_space():
     # gradio_client v2.5.0 uses `token=`, while v4/v5 renamed it to `hf_token=`. Probe to stay forward-compat.
     import inspect
     _client_params = inspect.signature(Client.__init__).parameters
-    if "hf_token" in _client_params:
-        client = Client(space_id, hf_token=hf_token)
-    else:
-        client = Client(space_id, token=hf_token)
 
-    console.print(f"📤 Uploading [cyan]{_RAW_AUDIO_FILE}[/cyan] to Space and separating (this may take ~30-90s)...")
+    # Configurable httpx timeout (seconds). HF Spaces with cold start / ZeroGPU queueing
+    # can stall both upload and read for far longer than httpx's default 5s read window.
+    # We pass a single scalar to httpx.Timeout → applies to connect/read/write/pool uniformly.
+    timeout_sec = float(_load_key_default("hf_demucs.timeout", 600))
+    import httpx as _httpx
+    _httpx_kwargs = {"timeout": _httpx.Timeout(timeout_sec)}
+
+    _ctor_kwargs = {"httpx_kwargs": _httpx_kwargs} if "httpx_kwargs" in _client_params else {}
+    if "hf_token" in _client_params:
+        client = Client(space_id, hf_token=hf_token, **_ctor_kwargs)
+    else:
+        client = Client(space_id, token=hf_token, **_ctor_kwargs)
+
+    console.print(f"📤 Uploading [cyan]{_RAW_AUDIO_FILE}[/cyan] to Space and separating (timeout={timeout_sec:.0f}s, this may take 1-3 min on cold start)...")
     result = client.predict(audio=handle_file(_RAW_AUDIO_FILE), api_name=api_name)
 
     if not isinstance(result, (list, tuple)) or len(result) < 2:

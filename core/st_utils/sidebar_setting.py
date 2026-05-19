@@ -435,6 +435,7 @@ def page_setting():
             "sf_cosyvoice2",
             "f5tts",
             "mimo_tts",
+            "indextts2",
         ]
         select_tts = st.selectbox(
             t("TTS Method"),
@@ -583,6 +584,60 @@ def page_setting():
                 )
             elif sel_mimo_model == "mimo-v2.5-tts-voiceclone":
                 st.info(t("Voice cloning uses reference audio at output/audio/refers/{number}.wav (auto-extracted by VideoLingo)"))
+
+        elif select_tts == "indextts2":
+            # Multi-server support: paste one URL per line (or comma-separated).
+            # Each VideoLingo worker thread sticky-binds to one server, so set
+            # `TTS Concurrency` >= number of servers for full parallelism.
+            try:
+                cur_base = load_key("indextts2.base_url")
+            except KeyError:
+                cur_base = ""
+            if isinstance(cur_base, list):
+                cur_base_text = "\n".join(str(u).strip() for u in cur_base if str(u).strip())
+            elif cur_base is None:
+                cur_base_text = ""
+            else:
+                cur_base_text = str(cur_base)
+            new_base_text = st.text_area(
+                t("IndexTTS-2 Base URL(s)"),
+                value=cur_base_text,
+                height=110,
+                help=t(
+                    "Gradio server URL(s). One per line for multi-server load balancing; "
+                    "single URL also works. Example: https://xxx-7860.ap-shanghai2.cloudstudio.club"
+                ),
+                key="indextts2_base_url_textarea",
+                placeholder="https://host-a-7860.example.com\nhttps://host-b-7860.example.com",
+            )
+            # Persist as list when >1 URL, else as plain string (matches old config).
+            parsed_urls = [
+                ln.strip()
+                for ln in new_base_text.replace(",", "\n").splitlines()
+                if ln.strip()
+            ]
+            new_base_value = parsed_urls if len(parsed_urls) > 1 else (parsed_urls[0] if parsed_urls else "")
+            if new_base_value != cur_base:
+                update_key("indextts2.base_url", new_base_value)
+                st.rerun()
+
+            cur_emo = load_key("indextts2.emo_weight")
+            try:
+                cur_emo_f = float(cur_emo) if cur_emo is not None else 0.65
+            except (TypeError, ValueError):
+                cur_emo_f = 0.65
+            new_emo = st.slider(
+                t("IndexTTS-2 Emotion Weight"),
+                min_value=0.0,
+                max_value=1.0,
+                value=cur_emo_f,
+                step=0.05,
+                help=t("How strongly the per-sentence original audio drives prosody. 0 = pure timbre, 1 = full emotion follow."),
+            )
+            if abs(new_emo - cur_emo_f) > 1e-6:
+                update_key("indextts2.emo_weight", float(new_emo))
+                st.rerun()
+            st.info(t("Timbre uses the long reference clip (same as MiMo clone); per-sentence emotion uses output/audio/refers/{number}.wav — both auto-built by VideoLingo."))
 
 
 def check_api():

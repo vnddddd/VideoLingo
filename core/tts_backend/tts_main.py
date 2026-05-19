@@ -6,6 +6,7 @@ from core.asr_backend.audio_preprocess import get_audio_duration
 from core.tts_backend.gpt_sovits_tts import gpt_sovits_tts_for_videolingo
 from core.tts_backend.sf_fishtts import siliconflow_fish_tts_for_videolingo
 from core.tts_backend.openai_tts import openai_tts
+from core.tts_backend.indextts2_tts import indextts2_tts_for_videolingo
 from core.tts_backend.fish_tts import fish_tts
 from core.tts_backend.azure_tts import azure_tts
 from core.tts_backend.edge_tts import edge_tts
@@ -152,6 +153,8 @@ def tts_main(text, save_as, number, task_df, speaker_id=None):
                 f5_tts_for_videolingo(text, save_as, number, task_df, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'mimo_tts':
                 mimo_tts_for_videolingo(text, save_as, number, task_df, voice_cfg=voice_cfg)
+            elif TTS_METHOD == 'indextts2':
+                indextts2_tts_for_videolingo(text, save_as, number, task_df, voice_cfg=voice_cfg)
                 
             # Check generated audio duration
             duration = get_audio_duration(save_as)
@@ -163,7 +166,7 @@ def tts_main(text, save_as, number, task_df, speaker_id=None):
                     silence = AudioSegment.silent(duration=100)  # 100ms silence
                     silence.export(save_as, format="wav")
                     return
-                print(f"Attempt {attempt + 1} failed (empty), retrying...")
+                print(f"Attempt {attempt + 1} failed (empty audio: duration=0), retrying...")
                 continue
 
             # Bad-quality detection: catches held vowels / slowdown blowing up duration
@@ -193,4 +196,4 @@ def tts_main(text, save_as, number, task_df, speaker_id=None):
         except Exception as e:
             if attempt == max_retries - 1:
                 raise Exception(f"Failed to generate audio after {max_retries} attempts: {str(e)}")
-            print(f"Attempt {attempt + 1} failed, retrying...")
+            print(f"Attempt {attempt + 1} failed: {type(e).__name__}: {str(e)[:300]}, retrying...")

@@ -249,11 +249,21 @@ def mimo_tts_for_videolingo(text, save_as, number=0, task_df=None, voice_cfg=Non
         )
     elif model == "mimo-v2.5-tts-voiceclone":
         if clone_override:
-            # Use the per-speaker reference clip from speaker_router.
+            # Multi-speaker path: use the per-speaker reference clip already
+            # built by _3_speaker_preview / speaker_router.
             ref_audio_path = Path(voice_cfg["ref_wav"])
+        elif _safe_load_key("mimo_tts.single_speaker_use_merged_ref", True):
+            # Single-speaker path (new default): build ONE global long
+            # reference (~22s of the longest phrases concatenated) and reuse
+            # it for every sentence — this makes cloned timbre far more
+            # stable line-to-line than the legacy per-sentence refers/{n}.wav
+            # (often <5s → voice drift). Any build failure raises (no silent
+            # fallback) — set mimo_tts.single_speaker_use_merged_ref: false
+            # to explicitly opt into the legacy per-sentence behaviour.
+            from core.utils._long_ref_extractor import ensure_long_ref
+            ref_audio_path = ensure_long_ref()
         else:
-            # Reuse the reference audio that VL pipeline already extracted in
-            # step _9_refer_audio. Same fallback chain as sf_cosyvoice2.
+            # Legacy per-sentence reference behaviour (opt-in via config).
             current_dir = Path.cwd()
             ref_audio_path = current_dir / f"output/audio/refers/{number}.wav"
             if not ref_audio_path.exists():
