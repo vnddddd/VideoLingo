@@ -242,14 +242,11 @@ def _rprint(message: str) -> None:
 
 REMOTE_TO_LOCAL_FILES = [
     RAW_AUDIO_FILE,
-    VOCAL_AUDIO_FILE,
-    BACKGROUND_AUDIO_FILE,
 ]
 
 LOCAL_TO_REMOTE_FILES = [
     DUB_AUDIO_FILE,
     DUB_SUB_FILE,
-    BACKGROUND_AUDIO_FILE,
 ]
 
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v")
@@ -261,6 +258,26 @@ def _display_path(path: Path | str) -> str:
 
 def _exists(path: Path | str) -> bool:
     return Path(path).exists()
+
+
+def _demucs_enabled_from_config() -> bool:
+    from core.utils.config_utils import load_key
+
+    return bool(load_key("demucs"))
+
+
+def _remote_to_local_files() -> list[Path]:
+    files = [RAW_AUDIO_FILE]
+    if _demucs_enabled_from_config():
+        files += [VOCAL_AUDIO_FILE, BACKGROUND_AUDIO_FILE]
+    return files
+
+
+def _local_to_remote_files() -> list[Path]:
+    files = [DUB_AUDIO_FILE, DUB_SUB_FILE]
+    if _demucs_enabled_from_config():
+        files.append(BACKGROUND_AUDIO_FILE)
+    return files
 
 
 def _require_files(paths: Iterable[Path | str], context: str) -> None:
@@ -339,8 +356,8 @@ def cmd_status(args: argparse.Namespace) -> None:
     except Exception as exc:
         print(f"[WARN] source video: {exc}")
 
-    remote_to_local = list(REMOTE_TO_LOCAL_FILES)
-    local_to_remote = list(LOCAL_TO_REMOTE_FILES)
+    remote_to_local = _remote_to_local_files()
+    local_to_remote = _local_to_remote_files()
     if video is not None:
         remote_to_local.append(video)
         local_to_remote.append(video)
@@ -666,15 +683,7 @@ def cmd_local_until_audio(args: argparse.Namespace) -> None:
 
 def _manifest_for_render() -> list[Path]:
     video = _find_unique_video()
-    files = [video, DUB_AUDIO_FILE, DUB_SUB_FILE]
-    if BACKGROUND_AUDIO_FILE.exists():
-        files.append(BACKGROUND_AUDIO_FILE)
-    elif RAW_AUDIO_FILE.exists():
-        # core/_12_dub_to_vid.py can fall back to raw.mp3 if background.mp3 is absent.
-        files.append(RAW_AUDIO_FILE)
-    else:
-        files.append(BACKGROUND_AUDIO_FILE)
-    return files
+    return [video, *_local_to_remote_files()]
 
 
 def cmd_pack_render_inputs(args: argparse.Namespace) -> None:
@@ -690,7 +699,8 @@ def cmd_pack_render_inputs(args: argparse.Namespace) -> None:
         "notes": [
             "Copy these paths relative to the VideoLingo project root on the render machine.",
             "Keep exactly one source video in output/ before running remote-render.",
-            "background.mp3 is preferred; raw.mp3 is accepted only as fallback by _12_dub_to_vid.py.",
+            "If demucs=true, also copy output/audio/background.mp3 for background mixing.",
+            "If demucs=false, raw/original audio is intentionally not copied or mixed; final render uses dub.mp3 only.",
         ],
     }
     print("\n[manifest]")

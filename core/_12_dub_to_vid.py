@@ -30,45 +30,41 @@ TRANS_OUTLINE_WIDTH = 1
 TRANS_BACK_COLOR = '&H33000000'
 
 def merge_video_audio():
-    """Merge video and audio, and reduce video volume"""
-    VIDEO_FILE = find_video_files()
-    background_file = _BACKGROUND_AUDIO_FILE
+    """Merge video with the generated dub audio.
 
-    # Fallback: when demucs is disabled (remote ASR/TTS users), background.mp3
-    # is never generated. Fall back to the raw mixed audio so the ffmpeg amix
-    # stage still has a valid second input. amix naturally attenuates each
-    # input by ~50%, so the original audio sits softly under the new dub.
-    if not os.path.exists(background_file):
-        if os.path.exists(_RAW_AUDIO_FILE):
-            rprint(
-                f"[yellow][WARN] {background_file} not found "
-                f"(demucs disabled). Falling back to {_RAW_AUDIO_FILE} "
-                f"as the background track.[/yellow]"
-            )
-            background_file = _RAW_AUDIO_FILE
-        else:
+    When Demucs/vocal separation is enabled, keep the separated background
+    track and mix it under the translated dub. When Demucs is disabled, do not
+    fall back to raw/original audio: mute the source video completely and map
+    only output/dub.mp3 into the final video.
+    """
+    VIDEO_FILE = find_video_files()
+    demucs_enabled = bool(load_key("demucs"))
+    background_file = _BACKGROUND_AUDIO_FILE if demucs_enabled else None
+
+    if demucs_enabled:
+        if not os.path.exists(background_file):
             raise FileNotFoundError(
-                f"Neither {background_file} nor {_RAW_AUDIO_FILE} exists; "
-                f"cannot merge dub video without a background audio source."
+                f"{background_file} is required when demucs=true; "
+                "run vocal separation first or set demucs: false to render "
+                "with only the translated dub audio."
             )
+        rprint(
+            f"[bold green]demucs=True: mixing separated background "
+            f"({background_file}) with translated dub.[/bold green]"
+        )
+    else:
+        rprint(
+            "[bold yellow]demucs=False: source/original audio is muted; "
+            "rendering final video with translated dub only.[/bold yellow]"
+        )
 
     if not load_key("burn_subtitles"):
-        rprint("[bold yellow]Warning: A 0-second black video will be generated as a placeholder as subtitles are not burned in.[/bold yellow]")
-
-        # Create a black frame
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(DUB_VIDEO, fourcc, 1, (1920, 1080))
-        out.write(frame)
-        out.release()
-
-        rprint("[bold green]Placeholder video has been generated.[/bold green]")
-        return
+        rprint("[bold yellow]burn_subtitles=False: rendering dub video without subtitle overlay (libass skipped).[/bold yellow]")
 
     # Merge video and audio with translated subtitles.
-    # Final loudness normalization is applied after amix so the exported video,
-    # not just the standalone dub track, lands at the target perceived loudness.
-    # This avoids the old dBFS-only normalization being attenuated again by amix.
+    # Final loudness normalization is applied to the final audio stream so the
+    # exported video, not just the standalone dub track, lands at the target
+    # perceived loudness.
     rprint(
         f"[bold green]Final audio loudness normalization: "
         f"{FINAL_AUDIO_LOUDNORM_FILTER}[/bold green]"
@@ -78,23 +74,40 @@ def merge_video_audio():
     TARGET_HEIGHT = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
     video.release()
     rprint(f"[bold green]Video resolution: {TARGET_WIDTH}x{TARGET_HEIGHT}[/bold green]")
-    
-    subtitle_filter = (
-        f"subtitles={DUB_SUB_FILE}:force_style='FontSize={TRANS_FONT_SIZE},"
-        f"FontName={TRANS_FONT_NAME},PrimaryColour={TRANS_FONT_COLOR},"
-        f"OutlineColour={TRANS_OUTLINE_COLOR},OutlineWidth={TRANS_OUTLINE_WIDTH},"
-        f"BackColour={TRANS_BACK_COLOR},Alignment=2,MarginV=27,BorderStyle=4'"
+
+    burn = load_key("burn_subtitles")
+    # Build the video filter graph. When burn_subtitles is False we skip the
+    # libass overlay — it's a single-threaded CPU bottleneck that starves the
+    # GPU encoder. Without it the hardware encoder can run flat-out.
+    video_chain = (
+        f"[0:v]scale={TARGET_WIDTH}:{TARGET_HEIGHT}:force_original_aspect_ratio=decrease,"
+        f"pad={TARGET_WIDTH}:{TARGET_HEIGHT}:(ow-iw)/2:(oh-ih)/2"
     )
-    
-    cmd = [
-        'ffmpeg', '-y', '-i', VIDEO_FILE, '-i', background_file, '-i', DUB_AUDIO,
-        '-filter_complex',
-        f'[0:v]scale={TARGET_WIDTH}:{TARGET_HEIGHT}:force_original_aspect_ratio=decrease,'
-        f'pad={TARGET_WIDTH}:{TARGET_HEIGHT}:(ow-iw)/2:(oh-ih)/2,'
-        f'{subtitle_filter}[v];'
-        f'[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=3[mixed];'
-        f'[mixed]{FINAL_AUDIO_LOUDNORM_FILTER}[a]'
-    ]
+    if burn:
+        subtitle_filter = (
+            f"subtitles={DUB_SUB_FILE}:force_style='FontSize={TRANS_FONT_SIZE},"
+            f"FontName={TRANS_FONT_NAME},PrimaryColour={TRANS_FONT_COLOR},"
+            f"OutlineColour={TRANS_OUTLINE_COLOR},OutlineWidth={TRANS_OUTLINE_WIDTH},"
+            f"BackColour={TRANS_BACK_COLOR},Alignment=2,MarginV=27,BorderStyle=4'"
+        )
+        video_chain += f",{subtitle_filter}"
+    video_chain += "[v]"
+
+    if demucs_enabled:
+        cmd = [
+            'ffmpeg', '-y', '-i', VIDEO_FILE, '-i', background_file, '-i', DUB_AUDIO,
+            '-filter_complex',
+            f'{video_chain};'
+            f'[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=3[mixed];'
+            f'[mixed]{FINAL_AUDIO_LOUDNORM_FILTER}[a]'
+        ]
+    else:
+        cmd = [
+            'ffmpeg', '-y', '-i', VIDEO_FILE, '-i', DUB_AUDIO,
+            '-filter_complex',
+            f'{video_chain};'
+            f'[1:a]{FINAL_AUDIO_LOUDNORM_FILTER}[a]'
+        ]
 
     # Hardware-accelerated encoder selection (cpu/nvenc/qsv/amf/auto)
     # See core/utils/ffmpeg_utils.py for supported config fields.
