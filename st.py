@@ -189,6 +189,51 @@ def _split_step(label: str, *args: str):
     return (label, lambda: _run_split_pipeline_command(*args))
 
 
+# ─── Kickoff memo: remember last pipeline start so the speaker picker can auto-resume ───
+def _kickoff(runner_key: str, steps_provider):
+    """Start a TaskRunner and remember how it was started.
+
+    If the pipeline halts at the multi-speaker picker, ``confirm_picks`` in the
+    picker UI sets ``_resume_after_picker``; on the next rerun, ``main()`` reads
+    this memo and replays the same start call so the user doesn't have to click
+    the start button a second time.
+    """
+    runner = TaskRunner.get(st.session_state, runner_key)
+    steps = steps_provider()
+    st.session_state["_last_kickoff"] = {
+        "runner_key": runner_key,
+        "steps_provider": steps_provider,
+    }
+    runner.start(steps)
+    st.rerun()
+
+
+def _resume_after_picker_if_needed() -> None:
+    """Replay the previous _kickoff after the speaker picker is confirmed.
+
+    Triggered when:
+      - picker is no longer pending (already cleared by confirm_picks)
+      - _resume_after_picker flag is set in session_state
+      - a previous _last_kickoff memo is available
+    """
+    if not st.session_state.pop("_resume_after_picker", False):
+        return
+    info = st.session_state.get("_last_kickoff")
+    if not info:
+        return
+    try:
+        runner = TaskRunner.get(st.session_state, info["runner_key"])
+        steps = info["steps_provider"]()
+    except Exception as exc:  # noqa: BLE001
+        st.warning(
+            f"{t('Voice picks saved, but auto-resume failed; please click the start button again.')}"
+            f" ({exc})"
+        )
+        return
+    runner.start(steps)
+    st.rerun()
+
+
 def _speaker_preview_inproc_step():
     """In-process speaker preview step for the text-pipeline runner.
 
@@ -358,9 +403,7 @@ def text_processing_section():
                 if st.button(
                     t("Start Processing Subtitles"), key="text_processing_button"
                 ):
-                    steps = _get_text_steps()
-                    runner.start(steps)
-                    st.rerun()
+                    _kickoff("_text_runner", _get_text_steps)
         else:
             if load_key("burn_subtitles"):
                 st.video(SUB_VIDEO)
@@ -424,18 +467,23 @@ def split_pipeline_section():
             col1, col2 = st.columns(2)
             with col1:
                 if st.button(t("1. Prepare Audio on Remote/GPU"), key="split_pipeline_prep_audio", use_container_width=True):
-                    runner.start([_split_step(t("Prepare split pipeline audio"), "prep-audio")])
-                    st.rerun()
+                    _kickoff(
+                        "_split_pipeline_runner",
+                        lambda: [_split_step(t("Prepare split pipeline audio"), "prep-audio")],
+                    )
                 if st.button(t("3. Package Render Inputs"), key="split_pipeline_pack", use_container_width=True):
-                    runner.start([_split_step(t("Package render inputs"), "pack-render-inputs", "--zip", SPLIT_RENDER_ZIP)])
-                    st.rerun()
+                    _kickoff(
+                        "_split_pipeline_runner",
+                        lambda: [_split_step(t("Package render inputs"), "pack-render-inputs", "--zip", SPLIT_RENDER_ZIP)],
+                    )
             with col2:
                 if st.button(t("2. Run Local Steps Until Audio"), key="split_pipeline_local_until_audio", use_container_width=True):
-                    runner.start(_split_local_resume_steps())
-                    st.rerun()
+                    _kickoff("_split_pipeline_runner", _split_local_resume_steps)
                 if st.button(t("4. Render Final Video on Remote/GPU"), key="split_pipeline_remote_render", use_container_width=True):
-                    runner.start([_split_step(t("Render final dubbed video"), "remote-render")])
-                    st.rerun()
+                    _kickoff(
+                        "_split_pipeline_runner",
+                        lambda: [_split_step(t("Render final dubbed video"), "remote-render")],
+                    )
 
 
 def audio_processing_section():
@@ -465,9 +513,7 @@ def audio_processing_section():
                 if st.button(
                     t("Start Audio Processing"), key="audio_processing_button"
                 ):
-                    steps = _get_audio_steps()
-                    runner.start(steps)
-                    st.rerun()
+                    _kickoff("_audio_runner", _get_audio_steps)
         else:
             st.success(
                 t(
@@ -512,6 +558,7 @@ def main():
     # button again to resume the pipeline.
     if render_speaker_picker_if_pending():
         return
+    _resume_after_picker_if_needed()
     text_processing_section()
     audio_processing_section()
     split_pipeline_section()

@@ -234,6 +234,11 @@ def mimo_tts_for_videolingo(text, save_as, number=0, task_df=None, voice_cfg=Non
     base_url = _safe_load_key("mimo_tts.base_url", DEFAULT_BASE_URL)
     model = _safe_load_key("mimo_tts.model", "mimo-v2.5-tts")
 
+    if isinstance(voice_cfg, dict):
+        cfg_model = (voice_cfg.get("model") or "").strip()
+        if cfg_model:
+            model = cfg_model
+
     # Multi-speaker clone override: force voiceclone model regardless of
     # the configured default when voice_cfg requests cloning.
     clone_override = bool(voice_cfg and voice_cfg.get("is_clone") and voice_cfg.get("ref_wav"))
@@ -242,9 +247,15 @@ def mimo_tts_for_videolingo(text, save_as, number=0, task_df=None, voice_cfg=Non
 
     kwargs = {}
     if model == "mimo-v2.5-tts":
-        kwargs["voice"] = _safe_load_key("mimo_tts.voice", "Chloe")
+        cfg_voice = (voice_cfg.get("voice") or "").strip() if isinstance(voice_cfg, dict) else ""
+        kwargs["voice"] = cfg_voice or _safe_load_key("mimo_tts.voice", "Chloe")
     elif model == "mimo-v2.5-tts-voicedesign":
-        kwargs["voice_description"] = _safe_load_key(
+        cfg_desc = (
+            (voice_cfg.get("voice_description") or "").strip()
+            if isinstance(voice_cfg, dict)
+            else ""
+        )
+        kwargs["voice_description"] = cfg_desc or _safe_load_key(
             "mimo_tts.voice_description", "A natural, neutral voice."
         )
     elif model == "mimo-v2.5-tts-voiceclone":

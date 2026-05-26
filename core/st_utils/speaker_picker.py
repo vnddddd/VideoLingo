@@ -33,17 +33,25 @@ from translations.translations import translate as t
 _NS = "_sp_picker_"                       # session_state key namespace
 _K_MODE = _NS + "mode__"                  # per-speaker selected mode key prefix
 _K_VOICE = _NS + "voice__"                # per-speaker fixed-voice input prefix
+_K_MIMO_VOICE_DESCRIPTION = _NS + "mimo_voice_description__"
 
 _MODE_FIXED = "fixed"
+_MODE_MIMO_VOICE_DESIGN = "mimo_voicedesign"
 _MODE_CLONE = "clone"
 _MODE_DEFAULT = "default"
 
 _MODE_LABELS: Dict[str, str] = {
     _MODE_FIXED: "🎙️ Fixed voice (specify a TTS voice name)",
+    _MODE_MIMO_VOICE_DESIGN: "🎨 Xiaomi MiMo voice design (describe the voice)",
     _MODE_CLONE: "👥 Clone this speaker (use the preview clip as reference)",
     _MODE_DEFAULT: "🔇 Use default voice (no per-speaker switching)",
 }
-_MODE_ORDER: List[str] = [_MODE_FIXED, _MODE_CLONE, _MODE_DEFAULT]
+_MODE_ORDER: List[str] = [
+    _MODE_FIXED,
+    _MODE_MIMO_VOICE_DESIGN,
+    _MODE_CLONE,
+    _MODE_DEFAULT,
+]
 
 
 # --------------------------------------------------------------------------- #
@@ -161,6 +169,27 @@ def _render_speaker_rows(manifest: List[Dict]) -> tuple[Dict[str, Dict], bool]:
                     )
                 entry_pick["voice"] = voice
 
+            elif mode == _MODE_MIMO_VOICE_DESIGN:
+                desc_key = _K_MIMO_VOICE_DESCRIPTION + speaker_id
+                voice_description = st.text_area(
+                    t("MiMo voice description"),
+                    key=desc_key,
+                    placeholder=t(
+                        "e.g. A warm, steady Mandarin male voice, natural pace, confident tone."
+                    ),
+                    help=t(
+                        "Uses Xiaomi MiMo model mimo-v2.5-tts-voicedesign for this speaker. "
+                        "Describe the target voice in natural language."
+                    ),
+                    height=90,
+                ).strip()
+                if not voice_description:
+                    incomplete = True
+                    st.caption(
+                        "⚠️ " + t("Voice description required for MiMo voice design mode.")
+                    )
+                entry_pick["voice_description"] = voice_description
+
             elif mode == _MODE_CLONE:
                 # Reference wav = this very preview clip.
                 entry_pick["ref_wav"] = wav_path
@@ -195,6 +224,10 @@ def _render_action_buttons(picks: Dict[str, Dict], incomplete: bool) -> None:
             except Exception as exc:  # noqa: BLE001 - surface any save error in UI
                 st.error(f"{t('Failed to save picks')}: {exc}")
                 return
+            # Flag main() to replay the previous pipeline kickoff so the user
+            # doesn't have to click the start button again. If no memo exists
+            # (e.g. user opened the picker directly), the flag is a no-op.
+            st.session_state["_resume_after_picker"] = True
             st.success(t("Voice picks saved. Resuming pipeline..."))
             st.rerun()
 

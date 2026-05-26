@@ -17,7 +17,6 @@
 #                                     duration, num_words}, ...]
 #   output/preview/.pending        - presence == UI must show picker
 # ------------------------------------------
-import hashlib
 import json
 import os
 import re
@@ -41,7 +40,6 @@ from core.utils.models import (
 PREVIEW_DIR = Path("output/preview")
 PENDING_FLAG = PREVIEW_DIR / ".pending"
 MANIFEST_FILE = PREVIEW_DIR / "manifest.json"
-CONFIRMED_STATE_FILE = PREVIEW_DIR / ".confirmed_voice_map.json"
 
 PREVIEW_TARGET_SECONDS = 15.0   # accumulate up to this much speech per speaker (user spec: 15s)
 MAX_CLIPS_PER_SPEAKER = 6       # cap clip count to keep the wav simple
@@ -171,47 +169,26 @@ def is_pending() -> bool:
 
 
 def is_required() -> bool:
-    """True iff the current ASR result needs a speaker-picker round.
+    """True iff a speaker-preview picker round should run.
 
-    Important: `speaker_voice_map` is persisted in config.yaml and may belong
-    to an older video/run.  Therefore a non-empty map alone is not enough to
-    skip the picker.  We skip only when the stored confirmation sidecar matches
-    the current `cleaned_chunks.xlsx` speaker signature and covers every
-    currently detected speaker.
+    Conditions:
+      1. multi_speaker_enabled is on in config; AND
+      2. speaker_voice_map is empty (user has not yet confirmed picks).
+
+    Once the user has confirmed picks in a previous round, speaker_voice_map
+    is non-empty and we MUST return False here — otherwise the picker would
+    re-trigger after every resume and we'd loop forever (the auto-resume
+    hook in st.py would restart the pipeline, which would again hit this
+    step, write .pending, and surface the picker again).
     """
     if not bool(load_key("multi_speaker_enabled")):
         return False
-
-    sig = _current_speaker_signature()
-    if sig is None:
-        return False
-    if len(sig.get("speaker_ids", [])) < MIN_SPEAKERS_TO_TRIGGER:
-        return False
-
     try:
         voice_map = load_key("speaker_voice_map")
     except Exception:
         voice_map = None
-    if not isinstance(voice_map, dict):
-        voice_map = {}
-
-    required_speakers = set(sig.get("speaker_ids", []))
-    mapped_speakers = {str(k).strip() for k in voice_map.keys() if str(k).strip()}
-    if not required_speakers.issubset(mapped_speakers):
-        rprint(
-            "[blue]🎤 Speaker preview required: current ASR speakers are not "
-            "fully covered by speaker_voice_map[/blue]"
-        )
-        return True
-
-    confirmed = _read_confirmed_state()
-    if confirmed.get("signature") == sig:
+    if isinstance(voice_map, dict) and len(voice_map) > 0:
         return False
-
-    rprint(
-        "[blue]🎤 Speaker preview required: current ASR speaker signature is "
-        "new or unconfirmed[/blue]"
-    )
     return True
 
 
@@ -243,22 +220,7 @@ def confirm_picks(speaker_voice_map: Dict[str, Dict]) -> None:
     """
     if not isinstance(speaker_voice_map, dict):
         raise TypeError(f"speaker_voice_map must be dict, got {type(speaker_voice_map).__name__}")
-
-    sig = _current_speaker_signature()
-    if sig is not None:
-        required_speakers = set(sig.get("speaker_ids", []))
-        mapped_speakers = {str(k).strip() for k in speaker_voice_map.keys() if str(k).strip()}
-        missing = sorted(required_speakers - mapped_speakers)
-        if missing:
-            raise ValueError(f"speaker_voice_map missing current speaker(s): {missing}")
-
     update_key("speaker_voice_map", speaker_voice_map)
-    if sig is not None:
-        _write_confirmed_state({
-            "signature": sig,
-            "speaker_ids": sig.get("speaker_ids", []),
-            "map_keys": sorted(str(k).strip() for k in speaker_voice_map.keys() if str(k).strip()),
-        })
     _clear_pending()
     rprint(f"[green]🎤 Speaker voice map saved ({len(speaker_voice_map)} entries); pending flag cleared[/green]")
 
@@ -270,8 +232,6 @@ def reset() -> None:
     _purge_previous_outputs()
     if MANIFEST_FILE.exists():
         MANIFEST_FILE.unlink()
-    if CONFIRMED_STATE_FILE.exists():
-        CONFIRMED_STATE_FILE.unlink()
 
 
 # ------------------------------------------
@@ -283,149 +243,6 @@ def _source_audio_path() -> Optional[str]:
     if os.path.exists(_RAW_AUDIO_FILE):
         return _RAW_AUDIO_FILE
     return None
-
-
-def _current_valid_speaker_rows() -> Optional[pd.DataFrame]:
-    """Load current cleaned_chunks speaker rows, or None when no picker applies."""
-    if not os.path.exists(_2_CLEANED_CHUNKS):
-        return None
-    try:
-        df = pd.read_excel(_2_CLEANED_CHUNKS)
-    except Exception as exc:
-        rprint(f"[yellow]🎤 Speaker preview signature skipped: cannot read {_2_CLEANED_CHUNKS}: {exc}[/yellow]")
-        return None
-    if "speaker_id" not in df.columns:
-        return None
-    valid = df[
-        df["speaker_id"].notna()
-        & (df["speaker_id"].astype(str).str.strip() != "")
-        & (df["speaker_id"].astype(str).str.lower() != "nan")
-    ].copy()
-    if valid.empty:
-        return None
-    valid["speaker_id"] = valid["speaker_id"].astype(str).str.strip()
-    return valid
-
-
-def _current_speaker_signature() -> Optional[Dict]:
-    """Return a stable signature for the current input media + ASR speakers.
-
-    The speaker picker is a per-project/per-input-media choice.  Do not key the
-    confirmation only by speaker ids/counts: a new video can also have seven
-    speakers, but the user must choose voices again for that new media.
-    """
-    valid = _current_valid_speaker_rows()
-    if valid is None:
-        return None
-
-    speaker_ids = _stable_speaker_order(valid)
-    speaker_counts = {str(k): int(v) for k, v in valid.groupby("speaker_id").size().to_dict().items()}
-
-    cols = [c for c in ("speaker_id", "start", "end", "text") if c in valid.columns]
-    compact = valid[cols].copy()
-    for col in compact.columns:
-        compact[col] = compact[col].map(lambda v: "" if pd.isna(v) else str(v).strip())
-    payload = compact.to_json(orient="records", force_ascii=False)
-    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-    return {
-        "source_media": _source_media_identity(),
-        "cleaned_chunks": str(_2_CLEANED_CHUNKS).replace("\\", "/"),
-        "hash": digest,
-        "speaker_ids": speaker_ids,
-        "speaker_counts": speaker_counts,
-        "rows": int(len(valid)),
-    }
-
-
-def _source_media_identity() -> Dict:
-    """Best-effort identity of the current source media under output/.
-
-    VideoLingo stores the selected/downloaded media in output/ and downstream
-    render artifacts also live there.  Mirror find_video_files(): keep source
-    video formats and exclude generated output/output*.  Include file metadata
-    plus a cheap first/last sample hash so replacing the input with another
-    same-named video still changes the picker confirmation signature.
-    """
-    candidates = _source_media_candidates()
-    if len(candidates) == 1:
-        return _file_identity(candidates[0])
-    if candidates:
-        return {
-            "status": "ambiguous",
-            "candidates": [_file_identity(p) for p in candidates],
-        }
-    return {"status": "missing"}
-
-
-def _source_media_candidates() -> List[Path]:
-    output_dir = Path("output")
-    if not output_dir.exists():
-        return []
-    try:
-        video_exts = {str(ext).lower().lstrip(".") for ext in load_key("allowed_video_formats")}
-    except Exception:
-        video_exts = {"mp4", "mov", "avi", "mkv", "flv", "wmv", "webm"}
-
-    candidates: List[Path] = []
-    for path in output_dir.iterdir():
-        if not path.is_file():
-            continue
-        if path.stem.startswith("output"):
-            continue
-        if path.suffix.lower().lstrip(".") in video_exts:
-            candidates.append(path)
-    return sorted(candidates, key=lambda p: p.as_posix().lower())
-
-
-def _file_identity(path: Path) -> Dict:
-    try:
-        stat = path.stat()
-        return {
-            "status": "ok",
-            "path": path.as_posix(),
-            "name": path.name,
-            "size": int(stat.st_size),
-            "mtime_ns": int(stat.st_mtime_ns),
-            "sample_sha256": _sample_file_sha256(path, stat.st_size),
-        }
-    except Exception as exc:
-        return {
-            "status": "error",
-            "path": path.as_posix(),
-            "error": str(exc),
-        }
-
-
-def _sample_file_sha256(path: Path, size: int, chunk_size: int = 1024 * 1024) -> str:
-    h = hashlib.sha256()
-    h.update(str(size).encode("utf-8"))
-    with path.open("rb") as f:
-        first = f.read(chunk_size)
-        h.update(first)
-        if size > chunk_size:
-            f.seek(max(0, size - chunk_size))
-            h.update(f.read(chunk_size))
-    return h.hexdigest()
-
-
-def _read_confirmed_state() -> Dict:
-    if not CONFIRMED_STATE_FILE.exists():
-        return {}
-    try:
-        data = json.loads(CONFIRMED_STATE_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except Exception as exc:
-        rprint(f"[yellow]🎤 confirmed speaker state unreadable: {exc}[/yellow]")
-        return {}
-
-
-def _write_confirmed_state(payload: Dict) -> None:
-    PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIRMED_STATE_FILE.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
 
 
 def _stable_speaker_order(valid: pd.DataFrame) -> List[str]:

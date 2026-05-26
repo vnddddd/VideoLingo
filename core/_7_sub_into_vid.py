@@ -44,21 +44,10 @@ def merge_subtitles_to_video():
     video_file = find_video_files()
     os.makedirs(os.path.dirname(OUTPUT_VIDEO), exist_ok=True)
 
-    # Check resolution
-    if not load_key("burn_subtitles"):
-        rprint("[bold yellow]Warning: A 0-second black video will be generated as a placeholder as subtitles are not burned in.[/bold yellow]")
-
-        # Create a black frame
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(OUTPUT_VIDEO, fourcc, 1, (1920, 1080))
-        out.write(frame)
-        out.release()
-
-        rprint("[bold green]Placeholder video has been generated.[/bold green]")
-        return
-
-    if not os.path.exists(SRC_SRT) or not os.path.exists(TRANS_SRT):
+    burn = load_key("burn_subtitles")
+    if not burn:
+        rprint("[bold yellow]burn_subtitles=False: rendering clean video without subtitle overlay (libass skipped).[/bold yellow]")
+    elif not os.path.exists(SRC_SRT) or not os.path.exists(TRANS_SRT):
         rprint("Subtitle files not found in the 'output' directory.")
         exit(1)
 
@@ -67,18 +56,30 @@ def merge_subtitles_to_video():
     TARGET_HEIGHT = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
     video.release()
     rprint(f"[bold green]Video resolution: {TARGET_WIDTH}x{TARGET_HEIGHT}[/bold green]")
-    ffmpeg_cmd = [
-        'ffmpeg', '-i', video_file,
-        '-vf', (
-            f"scale={TARGET_WIDTH}:{TARGET_HEIGHT}:force_original_aspect_ratio=decrease,"
-            f"pad={TARGET_WIDTH}:{TARGET_HEIGHT}:(ow-iw)/2:(oh-ih)/2,"
-            f"subtitles={SRC_SRT}:force_style='FontSize={SRC_FONT_SIZE},FontName={FONT_NAME}," 
+
+    # Build the video filter chain. When burn_subtitles is False we skip the
+    # libass overlays — they're a single-threaded CPU bottleneck that starves
+    # the GPU encoder. Skipping them lets the hardware encoder run flat-out.
+    vf_parts = [
+        f"scale={TARGET_WIDTH}:{TARGET_HEIGHT}:force_original_aspect_ratio=decrease",
+        f"pad={TARGET_WIDTH}:{TARGET_HEIGHT}:(ow-iw)/2:(oh-ih)/2",
+    ]
+    if burn:
+        vf_parts.append(
+            f"subtitles={SRC_SRT}:force_style='FontSize={SRC_FONT_SIZE},FontName={FONT_NAME},"
             f"PrimaryColour={SRC_FONT_COLOR},OutlineColour={SRC_OUTLINE_COLOR},OutlineWidth={SRC_OUTLINE_WIDTH},"
-            f"ShadowColour={SRC_SHADOW_COLOR},BorderStyle=1',"
+            f"ShadowColour={SRC_SHADOW_COLOR},BorderStyle=1'"
+        )
+        vf_parts.append(
             f"subtitles={TRANS_SRT}:force_style='FontSize={TRANS_FONT_SIZE},FontName={TRANS_FONT_NAME},"
             f"PrimaryColour={TRANS_FONT_COLOR},OutlineColour={TRANS_OUTLINE_COLOR},OutlineWidth={TRANS_OUTLINE_WIDTH},"
             f"BackColour={TRANS_BACK_COLOR},Alignment=2,MarginV=27,BorderStyle=4'"
-        ).encode('utf-8'),
+        )
+    vf_string = ','.join(vf_parts)
+
+    ffmpeg_cmd = [
+        'ffmpeg', '-i', video_file,
+        '-vf', vf_string.encode('utf-8'),
     ]
 
     # Hardware-accelerated encoder selection (cpu/nvenc/qsv/amf/auto)

@@ -25,8 +25,36 @@ def update_ytdlp():
 
 def download_video_ytdlp(url, save_path='output', resolution='1080'):
     os.makedirs(save_path, exist_ok=True)
+    # Format selection: prefer H.264 (avc1) over AV1/VP9.
+    #
+    # YouTube offers the same video in AV1 / VP9 / H.264; yt-dlp defaults to
+    # picking AV1 because it has the best compression. But AV1 hardware
+    # decode requires Intel 11th-gen (Tiger Lake/Xe) or NVIDIA RTX 30-series
+    # (Ampere) and newer. On older iGPUs/dGPUs (e.g. UHD 630, GT 1030) AV1
+    # falls back to libaom-av1 CPU software decode, which becomes the
+    # bottleneck for the later subtitle-burn / encode steps (_7, _12) and
+    # leaves the GPU encoder starved at ~50% utilization.
+    #
+    # Falling back chain (yt-dlp picks the first that matches):
+    #   1. avc1 video + audio at the requested resolution (best case: full
+    #      GPU pipeline downstream)
+    #   2. any video + audio at the requested resolution (e.g. AV1-only
+    #      uploads, rare on YouTube but possible on other sites)
+    #   3. best single stream at the requested resolution (last resort)
+    if resolution == 'best':
+        fmt = (
+            'bestvideo[vcodec^=avc1]+bestaudio/'
+            'bestvideo+bestaudio/'
+            'best'
+        )
+    else:
+        fmt = (
+            f'bestvideo[vcodec^=avc1][height<={resolution}]+bestaudio/'
+            f'bestvideo[height<={resolution}]+bestaudio/'
+            f'best[height<={resolution}]'
+        )
     ydl_opts = {
-        'format': 'bestvideo+bestaudio/best' if resolution == 'best' else f'bestvideo[height<={resolution}]+bestaudio/best[height<={resolution}]',
+        'format': fmt,
         'outtmpl': f'{save_path}/%(title)s.%(ext)s',
         'noplaylist': True,
         'writethumbnail': True,

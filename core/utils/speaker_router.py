@@ -33,8 +33,9 @@ for clone-capable backends, ``voice_cfg['ref_wav']``.
 Picker shape (input to this module) — see ``core._3_speaker_preview.confirm_picks``::
 
     speaker_voice_map = {
-        "<sid>": {"mode": "fixed",   "voice":   "<tts_voice_name>"},
-        "<sid>": {"mode": "clone",   "ref_wav": "<abs path>"},
+        "<sid>": {"mode": "fixed",            "voice": "<tts_voice_name>"},
+        "<sid>": {"mode": "mimo_voicedesign", "voice_description": "<prompt>"},
+        "<sid>": {"mode": "clone",            "ref_wav": "<abs path>"},
         "<sid>": {"mode": "default"},
     }
 """
@@ -52,12 +53,15 @@ from core.utils.config_utils import load_key
 # Modes accepted in speaker_voice_map entries. Kept in sync with
 # core/st_utils/speaker_picker.py constants.
 _MODE_FIXED = "fixed"
+_MODE_MIMO_VOICE_DESIGN = "mimo_voicedesign"
 _MODE_CLONE = "clone"
 _MODE_DEFAULT = "default"
 
 # Backend used whenever a speaker is configured for voice cloning. Matches
 # the plan (C4 step in plan_multispeaker): clone -> gpt_sovits + spk{i}.wav.
 _CLONE_BACKEND = "gpt_sovits"
+_MIMO_BACKEND = "mimo_tts"
+_MIMO_VOICE_DESIGN_MODEL = "mimo-v2.5-tts-voicedesign"
 
 
 def _safe_load(key: str, default: Any = None) -> Any:
@@ -109,6 +113,24 @@ def resolve_voice_cfg(speaker_id: Optional[str]) -> Optional[Dict[str, Any]]:
             "voice": voice,
             "ref_wav": None,
             "is_clone": False,
+        }
+
+    if mode == _MODE_MIMO_VOICE_DESIGN:
+        voice_description = (entry.get("voice_description") or "").strip()
+        if not voice_description:
+            rprint(
+                f"[yellow]🎤 speaker_router: speaker '{speaker_id}' is "
+                f"'mimo_voicedesign' but voice_description is empty; "
+                f"falling back to global voice.[/yellow]"
+            )
+            return None
+        return {
+            "method": _MIMO_BACKEND,
+            "voice": None,
+            "ref_wav": None,
+            "is_clone": False,
+            "model": _MIMO_VOICE_DESIGN_MODEL,
+            "voice_description": voice_description,
         }
 
     if mode == _MODE_CLONE:

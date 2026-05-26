@@ -95,19 +95,29 @@ def get_video_encoder_args():
         hwaccel = detect_best_encoder()
 
     if hwaccel == 'nvenc':
-        return ['-c:v', 'h264_nvenc', '-preset', preset, '-cq', quality], 'nvenc'
+        # -async_depth lets the encoder buffer multiple frames in flight so
+        # the GPU keeps working while the CPU is busy with the next filter
+        # pass (libass / scale / pad). Without it the encoder idles half the
+        # time waiting for the next frame.
+        return ['-c:v', 'h264_nvenc', '-preset', preset, '-cq', quality,
+                '-async_depth', '4'], 'nvenc'
 
     if hwaccel == 'qsv':
         qsv_preset = _QSV_PRESET_MAP.get(preset, 'medium')
+        # async_depth=4 is the QSV equivalent — pipelines 4 frames through
+        # the iGPU so the encoder doesn't stall between CPU-side filter
+        # passes. Cheap memory cost, big throughput win on Intel iGPUs.
         return ['-c:v', 'h264_qsv', '-preset', qsv_preset,
-                '-global_quality', quality], 'qsv'
+                '-global_quality', quality,
+                '-async_depth', '4'], 'qsv'
 
     if hwaccel == 'amf':
         # AMF uses -quality {speed,balanced,quality} not preset
         amf_q = 'speed' if preset in ('ultrafast', 'superfast', 'veryfast',
                                        'faster', 'fast') else 'balanced'
         return ['-c:v', 'h264_amf', '-quality', amf_q,
-                '-rc', 'cqp', '-qp_i', quality, '-qp_p', quality], 'amf'
+                '-rc', 'cqp', '-qp_i', quality, '-qp_p', quality,
+                '-async_depth', '4'], 'amf'
 
     # Default: CPU libx264
     return ['-c:v', 'libx264', '-preset', preset, '-crf', quality], 'cpu'
