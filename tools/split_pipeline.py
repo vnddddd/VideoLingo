@@ -583,12 +583,18 @@ def _text_and_audio_steps() -> list[tuple[str, Callable[[], object]]]:
         if _checkpoint_complete([DUB_AUDIO_FILE, DUB_SUB_FILE]):
             print(f"[SKIP] TTS/audio merge: {_display_path(DUB_AUDIO_FILE)} and {_display_path(DUB_SUB_FILE)} already exist.")
             return
-        if _all_expected_audio_segments_exist():
-            print(f"[SKIP] TTS segment generation: all expected wav files already exist in {_display_path(AUDIO_SEGS_DIR)}.")
+        # Do not skip _10_gen_audio solely because segment wav files exist:
+        # a previous crash can happen after chunk wav generation but before
+        # audio_tasks.xlsx is saved with the `new_sub_times` timeline column.
+        # In that case gen_audio() resumes from existing wavs and recomputes /
+        # persists the timeline instead of re-generating TTS.
+        if _all_expected_audio_segments_exist() and _audio_task_has_columns(["new_sub_times"]):
+            print(f"[SKIP] TTS/audio timeline generation: expected wav files and new_sub_times already exist.")
         else:
             _10_gen_audio = _core_module("_10_gen_audio")
             _10_gen_audio.gen_audio()
-        _require_expected_audio_segments("TTS segment generation output")
+        _require_expected_audio_segments("TTS segment/timeline generation output")
+        _require_audio_task_columns(["new_sub_times"], "TTS audio timeline output")
         _11_merge_audio = _core_module("_11_merge_audio")
         _run_if_missing("Final dub audio/subtitle merge", [DUB_AUDIO_FILE, DUB_SUB_FILE], _11_merge_audio.merge_full_audio)
 

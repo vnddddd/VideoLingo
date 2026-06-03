@@ -6,6 +6,7 @@ from core.asr_backend.audio_preprocess import get_audio_duration
 from core.tts_backend.gpt_sovits_tts import gpt_sovits_tts_for_videolingo
 from core.tts_backend.sf_fishtts import siliconflow_fish_tts_for_videolingo
 from core.tts_backend.openai_tts import openai_tts
+from core.tts_backend.qwen3_tts import qwen3_tts
 from core.tts_backend.indextts2_tts import indextts2_tts_for_videolingo
 from core.tts_backend.fish_tts import fish_tts
 from core.tts_backend.azure_tts import azure_tts
@@ -16,6 +17,7 @@ from core.prompts import get_correct_text_prompt
 from core.tts_backend._302_f5tts import f5_tts_for_videolingo
 from core.tts_backend.mimo_tts import mimo_tts_for_videolingo
 from core.tts_backend.estimate_duration import init_estimator, estimate_duration
+from core.tts_backend.tts_vad import ensure_non_empty_wav, vad_compact_tts_audio
 from core.utils import *
 
 # --- Bad TTS quality detection ---
@@ -70,14 +72,19 @@ def tts_main(text, save_as, number, task_df, speaker_id=None):
     expected_dur = max(TTS_BAD_DUR_MIN_EXPECTED, estimate_duration(text, _TTS_ESTIMATOR))
     bad_threshold = expected_dur * TTS_BAD_DUR_RATIO
 
-    # Resume: skip iff the existing wav looks OK; drop bad leftovers so the
-    # normal retry loop below regenerates them.
+    # Resume: bad-quality detection must inspect the raw existing wav before
+    # any VAD compaction. If resume rescanning is disabled, do not trim here:
+    # returning the cached file unchanged is the only way to guarantee no VAD
+    # happens before bad-quality detection.
     if os.path.exists(save_as):
         if not TTS_RESCAN_BAD_ON_RESUME:
             return
         try:
             existing_dur = get_audio_duration(save_as)
             if existing_dur <= bad_threshold:
+                ensure_non_empty_wav(save_as)
+                vad_compact_tts_audio(save_as)
+                ensure_non_empty_wav(save_as)
                 return
             rprint(f"[yellow][BadTTS-rescan] {save_as} dur={existing_dur:.2f}s > {bad_threshold:.2f}s (expected {expected_dur:.2f}s); regenerating[/yellow]")
             os.remove(save_as)
@@ -135,6 +142,8 @@ def tts_main(text, save_as, number, task_df, speaker_id=None):
                     print(f"GPT correction failed: {ge}; using original text for last attempt")
             if TTS_METHOD == 'openai_tts':
                 openai_tts(text, save_as, voice_cfg=voice_cfg)
+            elif TTS_METHOD == 'qwen3_tts':
+                qwen3_tts(text, save_as, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'gpt_sovits':
                 gpt_sovits_tts_for_videolingo(text, save_as, number, task_df, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'fish_tts':
@@ -156,7 +165,10 @@ def tts_main(text, save_as, number, task_df, speaker_id=None):
             elif TTS_METHOD == 'indextts2':
                 indextts2_tts_for_videolingo(text, save_as, number, task_df, voice_cfg=voice_cfg)
                 
-            # Check generated audio duration
+            # Check generated audio duration on the raw backend output.
+            # Bad-quality detection must run before any VAD compaction; otherwise
+            # long held vowels / slowdowns could be hidden by trimming silence.
+            ensure_non_empty_wav(save_as)
             duration = get_audio_duration(save_as)
             if duration <= 0:
                 if os.path.exists(save_as):
@@ -189,9 +201,19 @@ def tts_main(text, save_as, number, task_df, speaker_id=None):
                     with open(save_as, 'wb') as fb:
                         fb.write(fallback_blob)
                 rprint(f"[red][BadTTS] gave up after {max_retries} attempts; using shortest fallback ({fallback_dur:.2f}s vs expected {expected_dur:.2f}s) for {save_as}[/red]")
+                # The bad/fallback decision is complete; apply the same final
+                # VAD post-trim as normal successful outputs before returning.
+                ensure_non_empty_wav(save_as)
+                vad_compact_tts_audio(save_as)
+                ensure_non_empty_wav(save_as)
                 return
 
-            # All good
+            # Bad-quality detection passed on raw audio. Now apply the final
+            # silero-vad post-trim shared by qwen3_tts, mimo_tts, and all other
+            # backends.
+            ensure_non_empty_wav(save_as)
+            vad_compact_tts_audio(save_as)
+            ensure_non_empty_wav(save_as)
             return
         except Exception as e:
             if attempt == max_retries - 1:

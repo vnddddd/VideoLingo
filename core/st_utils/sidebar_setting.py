@@ -427,6 +427,7 @@ def page_setting():
         tts_methods = [
             "azure_tts",
             "openai_tts",
+            "qwen3_tts",
             "fish_tts",
             "sf_fish_tts",
             "edge_tts",
@@ -484,6 +485,126 @@ def page_setting():
         elif select_tts == "openai_tts":
             config_input("302ai API", "openai_tts.api_key")
             config_input(t("OpenAI Voice"), "openai_tts.voice")
+
+        elif select_tts == "qwen3_tts":
+            config_input(t("DashScope API Key"), "qwen3_tts.api_key")
+
+            qwen3_models = [
+                "qwen3-tts-flash",
+                "qwen3-tts-instruct-flash",
+                "qwen3-tts-flash-2025-11-27",
+                "qwen3-tts-flash-2025-09-18",
+                "qwen3-tts-instruct-flash-2026-01-26",
+                "qwen-tts-latest",
+                "qwen-tts",
+            ]
+            current_model = load_key("qwen3_tts.model")
+            qwen3_model = st.selectbox(
+                t("Qwen3 TTS Model"),
+                options=qwen3_models,
+                index=qwen3_models.index(current_model) if current_model in qwen3_models else 0,
+                help=t("Use qwen3-tts-flash by default; instruct model supports instructions in DashScope."),
+            )
+            if qwen3_model != current_model:
+                update_key("qwen3_tts.model", qwen3_model)
+                st.rerun()
+
+            qwen3_voice_options = {
+                "Cherry": "芊悦｜阳光积极、亲切自然小姐姐（女）",
+                "Serena": "苏瑶｜温柔小姐姐（女）",
+                "Ethan": "晨煦｜阳光、温暖、活力（男）",
+                "Chelsie": "千雪｜二次元虚拟女友（女）",
+                "Momo": "茉兔｜撒娇搞怪，逗你开心（女）",
+                "Vivian": "十三｜拽拽的、可爱的小暴躁（女）",
+                "Moon": "月白｜率性帅气（男）",
+                "Maia": "四月｜知性与温柔（女）",
+                "Kai": "凯｜耳朵的一场 SPA（男）",
+                "Nofish": "不吃鱼｜不会翘舌音的设计师（男）",
+                "Bella": "萌宝｜小萝莉（女）",
+                "Jennifer": "詹妮弗｜电影质感美语女声（女）",
+                "Ryan": "甜茶｜节奏拉满、戏感炸裂（男）",
+                "Katerina": "卡捷琳娜｜御姐音色（女）",
+                "Aiden": "艾登｜美语大男孩（男）",
+                "Eldric Sage": "沧明子｜沉稳睿智老者（男）",
+                "Mia": "乖小妹｜温顺乖巧（女）",
+                "Mochi": "沙小弥｜聪明伶俐小大人（男）",
+                "Bellona": "燕铮莺｜洪亮清晰、江湖感（女）",
+                "Vincent": "田叔｜沙哑烟嗓（男）",
+                "Bunny": "萌小姬｜萌属性小萝莉（女）",
+                "Neil": "Neil",
+                "Elias": "Elias",
+                "Arthur": "Arthur",
+                "Nini": "邻家妹妹｜软糯甜妹（女）",
+                "Seren": "小婉｜温和舒缓（女）",
+                "Pip": "顽屁小孩｜调皮童真（男）",
+                "Stella": "少女阿月｜甜美少女音（女）",
+                "Bodega": "博德加｜热情西班牙大叔（男）",
+                "Sonrisa": "索尼莎｜热情拉美大姐（女）",
+                "Alek": "阿列克｜战斗民族冷暖感（男）",
+                "Dolce": "多尔切｜慵懒意大利大叔（男）",
+                "Sohee": "素熙｜韩国欧尼（女）",
+                "Ono Anna": "小野杏｜鬼灵精怪青梅竹马（女）",
+                "Lenn": "莱恩｜德国青年（男）",
+                "Emilien": "埃米尔安｜法国大哥哥（男）",
+                "Andre": "安德雷｜磁性沉稳男声（男）",
+                "Radio Gol": "拉迪奥·戈尔｜足球诗人（男）",
+                "Jada": "上海-阿珍｜沪上阿姐（女）",
+                "Dylan": "北京-晓东｜北京胡同少年（男）",
+                "Li": "南京-老李｜耐心瑜伽老师（男）",
+                "Marcus": "陕西-秦川｜老陕味道（男）",
+                "Roy": "闽南-阿杰｜台湾哥仔（男）",
+                "Peter": "天津-李彼得｜天津相声捧哏（男）",
+                "Sunny": "四川-晴儿｜川妹子（女）",
+                "Eric": "四川-程川｜成都男子（男）",
+                "Rocky": "粤语-阿强｜幽默风趣（男）",
+                "Kiki": "粤语-阿清｜甜美港妹（女）",
+            }
+            qwen3_voice_keys = list(qwen3_voice_options.keys())
+            current_voice = load_key("qwen3_tts.voice")
+            qwen3_voice = st.selectbox(
+                t("Qwen3 TTS Voice"),
+                options=qwen3_voice_keys,
+                format_func=lambda x: f"{x} - {qwen3_voice_options[x]}",
+                index=qwen3_voice_keys.index(current_voice) if current_voice in qwen3_voice_keys else 0,
+                help=t("Official Qwen/Qwen3 TTS preset voices from Alibaba Cloud Model Studio."),
+            )
+            if qwen3_voice != current_voice:
+                update_key("qwen3_tts.voice", qwen3_voice)
+                st.rerun()
+
+            qwen3_languages = [
+                "Chinese",
+                "English",
+                "Japanese",
+                "Korean",
+                "German",
+                "French",
+                "Spanish",
+                "Italian",
+                "Portuguese",
+                "Russian",
+            ]
+            current_language = load_key("qwen3_tts.language_type")
+            qwen3_language = st.selectbox(
+                t("Qwen3 TTS Language"),
+                options=qwen3_languages,
+                index=qwen3_languages.index(current_language) if current_language in qwen3_languages else 0,
+                help=t("Choose the language matching the input text for better pronunciation."),
+            )
+            if qwen3_language != current_language:
+                update_key("qwen3_tts.language_type", qwen3_language)
+                st.rerun()
+
+            qwen3_region = st.selectbox(
+                t("Qwen3 TTS Region"),
+                options=["beijing", "singapore"],
+                index=["beijing", "singapore"].index(load_key("qwen3_tts.region"))
+                if load_key("qwen3_tts.region") in ["beijing", "singapore"] else 0,
+                help=t("beijing: dashscope.aliyuncs.com; singapore: dashscope-intl.aliyuncs.com"),
+            )
+            if qwen3_region != load_key("qwen3_tts.region"):
+                update_key("qwen3_tts.region", qwen3_region)
+                st.rerun()
 
         elif select_tts == "fish_tts":
             config_input("302ai API", "fish_tts.api_key")

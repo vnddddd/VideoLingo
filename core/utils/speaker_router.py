@@ -44,6 +44,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, Optional
+import math
+import re
 
 from rich import print as rprint
 
@@ -81,14 +83,60 @@ def _voice_map() -> Dict[str, Dict]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _normalise_speaker_id(value: Any) -> Optional[str]:
+    """Return the canonical string id used by speaker_voice_map.
+
+    The speaker id travels through JSON and Excel/Pandas before TTS.  Excel
+    commonly round-trips ids like "1" as numeric 1/1.0, while YAML config keys
+    are stored as strings.  Canonicalising here keeps the router as the single
+    source of truth and prevents silent fallback to the global/default voice.
+    """
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return str(value).strip()
+
+    if isinstance(value, int):
+        return str(value)
+
+    if isinstance(value, float):
+        if math.isnan(value):
+            return None
+        if value.is_integer():
+            return str(int(value))
+        return str(value).strip()
+
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none", "<na>"}:
+        return None
+
+    # Pandas/openpyxl may surface integral ids as strings such as "1.0".
+    if re.fullmatch(r"[+-]?\d+\.0+", text):
+        return text.split(".", 1)[0]
+
+    return text
+
+
+def _normalised_voice_map() -> Dict[str, Dict]:
+    result: Dict[str, Dict] = {}
+    for raw_sid, entry in _voice_map().items():
+        sid = _normalise_speaker_id(raw_sid)
+        if sid is not None:
+            result[sid] = entry
+    return result
+
+
 def resolve_voice_cfg(speaker_id: Optional[str]) -> Optional[Dict[str, Any]]:
     """Resolve effective TTS config for *speaker_id*; see module docstring."""
     if not _multi_enabled():
         return None
-    if not speaker_id:
+
+    sid = _normalise_speaker_id(speaker_id)
+    if not sid:
         return None
 
-    entry = _voice_map().get(speaker_id)
+    entry = _normalised_voice_map().get(sid)
     if not isinstance(entry, dict):
         return None
 
