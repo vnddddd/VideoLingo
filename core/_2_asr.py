@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
 
 from pydub.utils import mediainfo
 
@@ -24,8 +25,11 @@ def _load_asr_max_workers(runtime: str, segments_count: int) -> int:
 @check_file_exists(_2_CLEANED_CHUNKS)
 def transcribe():
     # 1. video to audio
-    video_file = find_video_files()
-    convert_video_to_audio(video_file)
+    if os.path.exists(_RAW_AUDIO_FILE):
+        rprint(f"[yellow]⚠️ {_RAW_AUDIO_FILE} already exists, skip media-to-audio conversion.[/yellow]")
+    else:
+        video_file = find_video_files()
+        convert_video_to_audio(video_file)
 
     # 2. Demucs vocal separation:
     if load_key("demucs"):

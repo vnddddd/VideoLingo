@@ -203,8 +203,15 @@ def siliconflow_fish_tts_for_videolingo(text, save_as, number, task_df, voice_cf
     if MODE == "preset":
         return siliconflow_fish_tts(text, save_as, mode="preset")
     elif MODE == "custom":
-        video_file = find_video_files()
-        custom_name = hashlib.md5(video_file.encode()).hexdigest()[:8]
+        try:
+            source_media = find_video_files()
+        except Exception:
+            raw_audio = Path(_RAW_AUDIO_FILE)
+            if not raw_audio.exists():
+                raise
+            stat = raw_audio.stat()
+            source_media = f"{raw_audio}:{stat.st_size}:{stat.st_mtime_ns}"
+        custom_name = hashlib.md5(source_media.encode()).hexdigest()[:8]
         rprint(f"[yellow]Using custom name: {custom_name}")
         log_name = load_key("sf_fish_tts.custom_name")
         

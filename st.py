@@ -15,7 +15,34 @@ st.set_page_config(page_title="VideoLingo", page_icon="docs/logo.svg")
 
 SUB_VIDEO = "output/output_sub.mp4"
 DUB_VIDEO = "output/output_dub.mp4"
+DUB_AUDIO = "output/dub.mp3"
+DUB_SUBTITLE = "output/dub.srt"
+TRANS_SUBTITLE = "output/trans.srt"
+RAW_AUDIO = "output/audio/raw.mp3"
 SPLIT_RENDER_ZIP = "output/render_inputs.zip"
+
+
+def _has_source_video() -> bool:
+    try:
+        return os.path.exists(_1_ytdlp.find_video_files())
+    except Exception:
+        return False
+
+
+def _is_audio_only_source() -> bool:
+    return os.path.exists(RAW_AUDIO) and not _has_source_video()
+
+
+def _subtitle_outputs_complete() -> bool:
+    if _is_audio_only_source():
+        return os.path.exists(TRANS_SUBTITLE)
+    return os.path.exists(SUB_VIDEO)
+
+
+def _dubbing_outputs_complete() -> bool:
+    if _is_audio_only_source():
+        return os.path.exists(DUB_AUDIO) and os.path.exists(DUB_SUBTITLE)
+    return os.path.exists(DUB_VIDEO)
 
 
 def _current_process_identity() -> str | None:
@@ -366,11 +393,14 @@ def _get_text_steps():
                 _6_gen_sub.align_timestamp_main(),
             ),
         ),
-        (
-            t("Merging subtitles into the video"),
-            _7_sub_into_vid.merge_subtitles_to_video,
-        ),
     ]
+    if not _is_audio_only_source():
+        steps.append(
+            (
+                t("Merging subtitles into the video"),
+                _7_sub_into_vid.merge_subtitles_to_video,
+            )
+        )
     return steps
 
 
@@ -394,7 +424,7 @@ def text_processing_section():
             unsafe_allow_html=True,
         )
 
-        if not os.path.exists(SUB_VIDEO):
+        if not _subtitle_outputs_complete():
             if runner.is_active:
                 _task_control_panel("_text_runner")
             elif runner.is_done:
@@ -405,7 +435,9 @@ def text_processing_section():
                 ):
                     _kickoff("_text_runner", _get_text_steps)
         else:
-            if load_key("burn_subtitles"):
+            if _is_audio_only_source():
+                st.success(t("Subtitle processing is complete!"))
+            elif load_key("burn_subtitles"):
                 st.video(SUB_VIDEO)
             download_subtitle_zip_button(text=t("Download All Srt Files"))
 
@@ -431,8 +463,9 @@ def _get_audio_steps():
         (t("Extract reference audio"), _9_refer_audio.extract_refer_audio_main),
         (t("Generate and merge audio files"), _10_gen_audio.gen_audio),
         (t("Merge full audio"), _11_merge_audio.merge_full_audio),
-        (t("Merge final audio into video"), _12_dub_to_vid.merge_video_audio),
     ]
+    if not _is_audio_only_source():
+        steps.append((t("Merge final audio into video"), _12_dub_to_vid.merge_video_audio))
     return steps
 
 
@@ -504,7 +537,7 @@ def audio_processing_section():
             unsafe_allow_html=True,
         )
 
-        if not os.path.exists(DUB_VIDEO):
+        if not _dubbing_outputs_complete():
             if runner.is_active:
                 _task_control_panel("_audio_runner")
             elif runner.is_done:
@@ -520,7 +553,10 @@ def audio_processing_section():
                     "Audio processing is complete! You can check the audio files in the `output` folder."
                 )
             )
-            if load_key("burn_subtitles"):
+            if _is_audio_only_source():
+                st.audio(DUB_AUDIO)
+                download_subtitle_zip_button(text=t("Download All Srt Files"))
+            elif load_key("burn_subtitles"):
                 st.video(DUB_VIDEO)
             if st.button(t("Delete dubbing files"), key="delete_dubbing_files"):
                 delete_dubbing_files()

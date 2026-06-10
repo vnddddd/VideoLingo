@@ -5,9 +5,12 @@ import shutil
 
 def cleanup(history_dir="history"):
     # Get video file name
-    video_file = find_video_files()
-    video_name = video_file.split("/")[1]
-    video_name = os.path.splitext(video_name)[0]
+    try:
+        video_file = find_video_files()
+        video_name = video_file.split("/")[1]
+        video_name = os.path.splitext(video_name)[0]
+    except Exception:
+        video_name = "audio_only"
     video_name = sanitize_filename(video_name)
     
     # Create required folders

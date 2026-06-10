@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>VideoLingo</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <strong>VideoLingo</strong>
+        <span id="bridgeState">Checking</span>
+      </header>
+
+      <section>
+        <div id="videoTitle">No YouTube video detected</div>
+        <div id="videoUrl"></div>
+      </section>
+
+      <button id="startButton" type="button">Translate and Dub</button>
+      <button id="overlayButton" type="button" disabled>Use Original Audio</button>
+
+      <div id="status">Start the local bridge first.</div>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "VideoLingo YouTube Dubber",
+  "version": "0.1.0",
+  "description": "Send the current YouTube video to a local VideoLingo bridge and overlay translated dubbing/subtitles.",
+  "permissions": [
+    "activeTab",
+    "alarms",
+    "cookies",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://www.youtube.com/*",
+    "https://youtube.com/*",
+    "https://youtu.be/*",
+    "https://*.google.com/*",
+    "http://127.0.0.1:8765/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "VideoLingo"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://youtube.com/*",
+        "https://youtu.be/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

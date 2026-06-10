@@ -1,0 +1,81 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  font-family: Arial, sans-serif;
+  color: #172033;
+  background: #f7f8fb;
+}
+
+main {
+  padding: 14px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+#bridgeState {
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: #e9eef8;
+  color: #3a4c68;
+  font-size: 12px;
+}
+
+section {
+  margin-bottom: 12px;
+}
+
+#videoTitle {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+#videoUrl {
+  margin-top: 4px;
+  color: #647086;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+button {
+  width: 100%;
+  height: 36px;
+  margin-top: 8px;
+  border: 1px solid #1d5fd1;
+  border-radius: 6px;
+  background: #1d5fd1;
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button:disabled {
+  border-color: #c7ceda;
+  background: #d8dde6;
+  color: #7a8495;
+  cursor: default;
+}
+
+#overlayButton {
+  background: #fff;
+  color: #1d5fd1;
+}
+
+#status {
+  margin-top: 12px;
+  min-height: 18px;
+  color: #34445d;
+  font-size: 12px;
+  line-height: 1.4;
+}

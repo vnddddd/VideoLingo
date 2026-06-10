@@ -170,6 +170,7 @@ config.backup.yaml
 
 # runtime
 runtime/
+.tmp/
 dev/
 installer_files/
 logs/
@@ -180,6 +181,7 @@ config.yaml.bak*
 config.*.bak
 *.bak_before_*
 output_bak_*/
+output_broken_*/
 *_~*
 .venv/
 .idea/

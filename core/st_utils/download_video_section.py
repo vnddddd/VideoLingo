@@ -5,11 +5,12 @@ import subprocess
 from time import sleep
 
 import streamlit as st
-from core._1_ytdlp import download_video_ytdlp, find_video_files
+from core._1_ytdlp import download_audio_ytdlp, download_video_ytdlp, find_video_files
 from core.utils import *
 from translations.translations import translate as t
 
 OUTPUT_DIR = "output"
+RAW_AUDIO_FILE = os.path.join(OUTPUT_DIR, "audio", "raw.mp3")
 
 def download_video_section():
     st.header(t("a. Download or Upload Video"))
@@ -25,6 +26,15 @@ def download_video_section():
                 st.rerun()
             return True
         except:
+            if os.path.exists(RAW_AUDIO_FILE):
+                st.audio(RAW_AUDIO_FILE)
+                if st.button(t("Delete and Reselect"), key="delete_audio_button"):
+                    if os.path.exists(OUTPUT_DIR):
+                        shutil.rmtree(OUTPUT_DIR)
+                    sleep(1)
+                    st.rerun()
+                return True
+
             col1, col2 = st.columns([3, 1])
             with col1:
                 url = st.text_input(t("Enter YouTube link:"))
@@ -39,10 +49,16 @@ def download_video_section():
                 default_idx = list(res_dict.values()).index(target_res) if target_res in res_dict.values() else 0
                 res_display = st.selectbox(t("Resolution"), options=res_options, index=default_idx)
                 res = res_dict[res_display]
+            audio_only = st.checkbox(t("Download audio only"), value=False, key="download_audio_only")
             if st.button(t("Download Video"), key="download_button", width="stretch"):
                 if url:
-                    with st.spinner("Downloading video..."):
-                        download_video_ytdlp(url, resolution=res)
+                    if os.path.exists(OUTPUT_DIR):
+                        shutil.rmtree(OUTPUT_DIR)
+                    with st.spinner("Downloading audio..." if audio_only else "Downloading video..."):
+                        if audio_only:
+                            download_audio_ytdlp(url)
+                        else:
+                            download_video_ytdlp(url, resolution=res)
                     st.rerun()
 
             uploaded_file = st.file_uploader(t("Or upload video"), type=load_key("allowed_video_formats") + load_key("allowed_audio_formats"))

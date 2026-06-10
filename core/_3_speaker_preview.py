@@ -375,6 +375,10 @@ def _source_media_candidates() -> List[Path]:
             continue
         if path.suffix.lower().lstrip(".") in video_exts:
             candidates.append(path)
+    if not candidates:
+        raw_audio = Path(_RAW_AUDIO_FILE)
+        if raw_audio.exists():
+            candidates.append(raw_audio)
     return sorted(candidates, key=lambda p: p.as_posix().lower())
 
 
