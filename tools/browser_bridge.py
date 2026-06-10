@@ -38,6 +38,8 @@ LOGS_DIR = RUNTIME_DIR / "logs"
 INDEX_FILE = RUNTIME_DIR / "index.json"
 COOKIE_FILE = PROJECT_ROOT / "cookies" / "browser_bridge_youtube.txt"
 PIPELINE_SCRIPT = PROJECT_ROOT / "tools" / "split_pipeline.py"
+CONFIG_FILE = PROJECT_ROOT / "config.yaml"
+CONFIG_EXAMPLE_FILE = PROJECT_ROOT / "config.example.yaml"
 PLUGIN_AUDIO_FILE = "dub_loudnorm.mp3"
 WORK_OUTPUT_DIRNAME = "work_output"
 JOB_COOKIE_FILE = "cookies.txt"
@@ -77,6 +79,14 @@ def _job_work_output_dir(job_id: str) -> Path:
 
 def _job_cookie_file(job_id: str) -> Path:
     return _job_dir(job_id) / JOB_COOKIE_FILE
+
+
+def _ensure_config_file() -> None:
+    if CONFIG_FILE.exists():
+        return
+    if not CONFIG_EXAMPLE_FILE.exists():
+        raise FileNotFoundError(f"{CONFIG_FILE.name} not found and {CONFIG_EXAMPLE_FILE.name} is missing")
+    shutil.copy2(CONFIG_EXAMPLE_FILE, CONFIG_FILE)
 
 
 def _output_marker_path() -> Path:
@@ -447,19 +457,19 @@ def _store_job_cookies(job_id: str, cookies: list[dict[str, Any]]) -> Path | Non
 
 def _update_config_cookie_path(cookie_file: Path) -> None:
     """Update config.yaml without importing VideoLingo's heavy core package."""
-    config_path = PROJECT_ROOT / "config.yaml"
     try:
+        _ensure_config_file()
         from ruamel.yaml import YAML
 
         yaml = YAML()
         yaml.preserve_quotes = True
-        data = yaml.load(config_path.read_text(encoding="utf-8"))
+        data = yaml.load(CONFIG_FILE.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             return
         youtube = data.setdefault("youtube", {})
         if isinstance(youtube, dict):
             youtube["cookies_path"] = str(cookie_file)
-            with config_path.open("w", encoding="utf-8") as f:
+            with CONFIG_FILE.open("w", encoding="utf-8") as f:
                 yaml.dump(data, f)
     except Exception as exc:  # noqa: BLE001
         print(f"[WARN] Failed to update config.yaml youtube.cookies_path: {exc}", flush=True)

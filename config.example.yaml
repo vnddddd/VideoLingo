@@ -1,0 +1,290 @@
+# Example configuration. Copy to config.yaml and fill private keys locally. Do not commit config.yaml.
+display_language: "zh-CN"
+
+# API settings
+api:
+  key: ''
+  base_url: 'https://dashscope.aliyuncs.com/compatible-mode'
+  model: 'deepseek-v4-flash'
+  llm_support_json: false
+  # Number of concurrent LLM translation/subtitle-splitting requests
+  max_workers: 60
+
+# *Remote request timeout settings, in seconds
+request_timeout:
+  llm: 120            # Translation / LLM single request
+  asr_upload: 500     # ASR audio upload
+  asr_request: 30     # ASR create/status requests
+  asr_poll_total: 600 # ASR total polling wait
+  asr_fetch: 60       # ASR transcript/result fetch
+  asr_cleanup: 30     # ASR remote cleanup requests
+  tts: 120             # TTS single request / download / subprocess
+
+# *Number of LLM multi-threaded accesses, set to 1 if using local LLM
+max_workers: 4
+
+# Language settings, written into the prompt, can be described in natural language
+target_language: '简体中文'
+
+# Whether to use Demucs for vocal separation before transcription
+demucs: false
+# Demucs backend selection:
+#   'local'    - run htdemucs on this machine (default; GPU/MPS/CPU, needs CUDA sm_70+)
+#   'hf_space' - offload to a HuggingFace Space (recommended for old GPUs like GT 1030)
+demucs_backend: 'hf_space'
+
+# HuggingFace Space settings (only used when demucs_backend == 'hf_space').
+# Get a FREE token at https://huggingface.co/settings/tokens (read scope is enough).
+hf_demucs:
+  space_id: 'abidlabs/music-separation'
+  hf_token: ''                                       # paste your HF token here (starts with hf_); leave empty to disable
+  api_name: '/predict'
+  timeout: 1800   # seconds; HF Space cold start可能要1-3min
+
+whisper:
+  # ["large-v3", "large-v3-turbo"]. Note: for zh model will force to use Belle/large-v3
+  model: 'large-v3'
+  # Whisper specified recognition language ISO 639-1
+  language: 'en'
+  detected_language: 'en'
+  # Whisper running mode ["local", "cloud", "elevenlabs", "soniox"]. Specifies where to run, cloud uses 302.ai API
+  runtime: 'soniox'
+  # *Number of concurrent ASR clip transcriptions. Local runtime is forced to 1 to protect GPU/VRAM.
+  max_workers: 4
+  # 302.ai API key
+  whisperX_302_api_key: ''
+  # ElevenLabs API key (experimental)
+  elevenlabs_api_key: ''
+  # Soniox API key (async transcription, v4)
+  soniox_api_key: ''
+  # Whether to enable speaker diarization for Soniox
+  soniox_diarize: false
+
+# Whether to enable multi-speaker diarization & per-speaker TTS voices.
+# Requires an ASR backend that supports diarization (Soniox / ElevenLabs).
+# When false, the whole pipeline behaves exactly as before (single voice).
+multi_speaker_enabled: false
+# Per-speaker voice picks persisted by the speaker-preview UI.
+# Auto-managed by core/_3_speaker_preview.py::confirm_picks. Leave {} by default.
+speaker_voice_map: {}
+burn_subtitles: false
+
+## ======================== Advanced Settings ======================== ##
+# *🔬 ffmpeg video encoder acceleration
+# Legacy field (kept for backward compat): true == ffmpeg_hwaccel: nvenc
+ffmpeg_gpu: false
+# Hardware accel type: cpu / nvenc (NVIDIA) / qsv (Intel iGPU) / amf (AMD) / auto
+#   - cpu  : libx264, most compatible, no GPU needed
+#   - nvenc: NVIDIA GTX 10xx+ (NOT GT1030/MX series), or any RTX card; works on Linux too
+#   - qsv  : Intel iGPU (UHD 630 etc.) - needs iGPU enabled in BIOS & device manager
+#   - amf  : AMD GPUs on Windows (Polaris+)
+#   - auto : probe at runtime, prefer nvenc > qsv > amf > cpu
+# If set (non-empty), this OVERRIDES the legacy ffmpeg_gpu field above.
+ffmpeg_hwaccel: auto
+# Encoder preset: ultrafast/superfast/veryfast/faster/fast/medium/slow/slower/veryslow
+# Lower = faster but bigger file. medium is a balanced default.
+ffmpeg_preset: medium
+# Quality (CRF for libx264 / CQ for nvenc / global_quality for qsv): 18-28
+# Lower = better quality but bigger file. 23 is the standard sweet spot.
+ffmpeg_quality: 23
+
+# *Youtube settings
+youtube:
+  cookies_path: ''
+
+# *Default resolution for downloading YouTube videos [360, 1080, best]
+ytb_resolution: '1080'
+
+subtitle:
+  # *Maximum length of each subtitle line in characters
+  max_length: 75
+  # *Translated subtitles are slightly larger than source subtitles, affecting the reference length for subtitle splitting
+  target_multiplier: 1.2
+
+# *Summary length, set low to 2k if using local LLM
+summary_length: 8000
+
+# *Maximum number of words for the first rough cut, below 18 will cut too finely affecting translation, above 22 is too long and will make subsequent subtitle splitting difficult to align
+max_split_length: 20
+
+# *Whether to reflect the translation result in the original text
+reflect_translate: true
+
+# *Whether to pause after extracting professional terms and before translation, allowing users to manually adjust the terminology table output\log\terminology.json
+pause_before_translate: false
+
+## ======================== Dubbing Settings ======================== ##
+# TTS selection [sf_fish_tts, openai_tts, qwen3_tts, gpt_sovits, azure_tts, fish_tts, edge_tts, custom_tts]
+tts_method: 'qwen3_tts'
+# Number of concurrent TTS audio generation requests. gpt_sovits is still forced to 1.
+tts_max_workers: 3
+
+# SiliconFlow FishTTS
+sf_fish_tts:
+  # SiliconFlow API key
+  api_key: ''
+  # only for mode "preset"
+  voice: 'anna'
+  # *only for mode "custom", dont set manually
+  custom_name: ''
+  voice_id: ''
+  # preset, custom, dynamic
+  mode: "preset"
+
+# OpenAI TTS-1 API configuration, 302.ai API only
+openai_tts:
+  api_key: ''
+  voice: 'alloy'
+
+# Alibaba Cloud Bailian / DashScope Qwen3-TTS
+qwen3_tts:
+  # DashScope API key (usually starts with sk-). Fill this locally before testing.
+  api_key: ''
+  # Beijing endpoint by default. Options: beijing / singapore
+  region: 'beijing'
+  # Qwen3-TTS model. Options include: qwen3-tts-flash
+  model: 'qwen3-tts-flash'
+  # Preset voice, e.g. Cherry (female) / Ethan (male)
+  voice: 'Andre'
+  # One of: Chinese, English, Japanese, Korean, German, French, Spanish, Italian, Portuguese, Russian
+  language_type: 'Chinese'
+
+# Azure configuration, 302.ai API only
+azure_tts:
+  api_key: ''
+  voice: 'zh-CN-YunfengNeural'
+
+# FishTTS configuration, 302.ai API only
+fish_tts:
+  api_key: ''
+  character: 'AD学姐'
+  character_id_dict:
+    'AD学姐': '7f92f8afb8ec43bf81429cc1c9199cb1'
+    '丁真': '54a5170264694bfc8e9ad98df7bd89c3'
+
+# SiliconFlow CosyVoice2 Clone
+sf_cosyvoice2:
+  api_key: ''
+
+# Xiaomi MiMo TTS (v2.5) — 3 models share one config block
+# Docs:  https://platform.xiaomimimo.com/docs/zh-CN/api/audio/tts-v2.5
+# Console: https://platform.xiaomimimo.com/  (subscription → token form 'tp-xxx')
+mimo_tts:
+  # Subscription endpoint. SGP=Singapore cluster (recommended).
+  # Alt: https://token-plan-cn.xiaomimimo.com/v1  (China cluster)
+  base_url: 'https://api1.oxoxo.cyou'
+  # Subscription token (form: tp-xxx)
+  api_key: ''
+  # One of: mimo-v2.5-tts / mimo-v2.5-tts-voicedesign / mimo-v2.5-tts-voiceclone
+  model: 'mimo-v2.5-tts-voicedesign'
+  # For mimo-v2.5-tts (preset voice). Options (9, live as of 2026-05-18):
+  #   Default:   mimo_default
+  #   ZH:        冰糖, 茉莉, 苏打, 白桦
+  #   EN-Female: Mia, Chloe
+  #   EN-Male:   Milo, Dean
+  voice: '白桦'
+  # For mimo-v2.5-tts-voicedesign (natural language voice prompt, any language)
+  voice_description: '一位沉稳、带有低沉冷静美音的年轻男性交易员。他的语气极具纪律性、丝滑而低沉，即使在紧张的市场环境下也毫无情绪波动。他说话节奏沉稳、富有分析感，传达出绝对的风控权威。'
+  # ---- Single-speaker stable voice-clone tuning ----
+  # When multi_speaker_enabled=false AND model='mimo-v2.5-tts-voiceclone',
+  # build ONE global reference (~22s of the longest phrases concatenated)
+  # and reuse it for every sentence — far more stable timbre than the legacy
+  # per-sentence refers/{n}.wav (often <5s → voice drift). The file lives at
+  # output/audio/refers/_long_ref.wav and is cached; delete it to rebuild,
+  # or set this flag to false to restore per-sentence behaviour.
+  single_speaker_use_merged_ref: true
+  # Target accumulated duration of the merged reference (seconds).
+  # MiMo voiceclone accepts ≤10 MB base64 mp3/wav (~4 min at 16kHz/mono/16bit),
+  # so values up to ~60s are safe; 20-25s is the sweet spot for stability.
+  single_speaker_merged_ref_target_seconds: 22
+  # Hard cap on number of phrases concatenated (prevents short-clip noise).
+  single_speaker_merged_ref_max_clips: 8
+
+# IndexTTS-2 (remote Gradio demo, e.g. cloudstudio / self-hosted)
+# Both timbre (_long_ref.wav) and per-sentence emotion (refers/{n}.wav) are
+# supplied automatically; you only need to set base_url.
+indextts2:
+  base_url:
+  - https://73c1b601abe34601a7f4b65f19f0b40a--7860.ap-shanghai2.cloudstudio.club
+  - https://d0a532ec3256496aa84e10f007c2c8a2--7860.ap-shanghai2.cloudstudio.club
+  - https://afbeed0df8ea4dccbf2f5017a7047a4c--7860.ap-shanghai2.cloudstudio.club
+  - https://81546efadf324dc284b6251ec9bbd971--7860.ap-shanghai2.cloudstudio.club
+  - https://041661bbfec1445498529c50ee351adb--7860.ap-shanghai2.cloudstudio.club
+  - https://ee49ae09fb424ba5b0cff334a24fa556--7860.ap-shanghai2.cloudstudio.club
+  emo_weight: 0.65
+
+# Edge TTS configuration
+edge_tts:
+  voice: 'zh-CN-XiaoxiaoNeural'
+
+# SoVITS configuration
+gpt_sovits:
+  character: 'Huanyuv2'
+  refer_mode: 3
+
+f5tts:
+  302_api: ''
+
+# *Audio speed range
+speed_factor:
+  min: 1
+  accept: 1.2 # Maximum acceptable speed
+  max: 1.4
+
+# *Merge audio configuration
+min_subtitle_duration: 2.5 # Minimum subtitle duration, will be forcibly extended
+min_trim_duration: 3.5 # Subtitles shorter than this value won't be split
+tolerance: 1.5 # Allowed extension time to the next subtitle
+
+
+
+
+
+## ======================== Additional settings ======================== ##
+
+# Whisper model directory
+model_dir: ''
+
+# Supported upload video formats
+allowed_video_formats:
+- 'mp4'
+- 'mov'
+- 'avi'
+- 'mkv'
+- 'flv'
+- 'wmv'
+- 'webm'
+
+allowed_audio_formats:
+- 'wav'
+- 'mp3'
+- 'flac'
+- 'm4a'
+
+# Spacy models
+spacy_model_map:
+  en: 'en_core_web_md'
+  ru: 'ru_core_news_md'
+  fr: 'fr_core_news_md'
+  ja: 'ja_core_news_md'
+  es: 'es_core_news_md'
+  de: 'de_core_news_md'
+  it: 'it_core_news_md'
+  zh: 'zh_core_web_md'
+
+# Languages that use space as separator
+language_split_with_space:
+- 'en'
+- 'es'
+- 'fr'
+- 'de'
+- 'it'
+- 'ru'
+
+# Languages that do not use space as separator
+language_split_without_space:
+- 'zh'
+- 'ja'
+
+
+ffmpeg_max_workers: 12

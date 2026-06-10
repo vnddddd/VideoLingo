@@ -1,7 +1,10 @@
+import os
 from ruamel.yaml import YAML
+import shutil
 import threading
 
 CONFIG_PATH = 'config.yaml'
+CONFIG_EXAMPLE_PATH = 'config.example.yaml'
 lock = threading.Lock()
 
 yaml = YAML()
@@ -11,8 +14,19 @@ yaml.preserve_quotes = True
 # load & update config
 # -----------------------
 
+def ensure_config_file():
+    """Create local config.yaml from config.example.yaml when it is missing."""
+    if os.path.exists(CONFIG_PATH):
+        return
+    if not os.path.exists(CONFIG_EXAMPLE_PATH):
+        raise FileNotFoundError(
+            f"{CONFIG_PATH} not found and {CONFIG_EXAMPLE_PATH} is missing"
+        )
+    shutil.copy2(CONFIG_EXAMPLE_PATH, CONFIG_PATH)
+
 def load_key(key):
     with lock:
+        ensure_config_file()
         with open(CONFIG_PATH, 'r', encoding='utf-8') as file:
             data = yaml.load(file)
 
@@ -27,6 +41,7 @@ def load_key(key):
 
 def update_key(key, new_value):
     with lock:
+        ensure_config_file()
         with open(CONFIG_PATH, 'r', encoding='utf-8') as file:
             data = yaml.load(file)
 
