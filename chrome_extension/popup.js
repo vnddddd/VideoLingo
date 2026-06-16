@@ -53,43 +53,54 @@ function setStatus(text) {
   statusEl.textContent = text;
 }
 
+function phaseName(phase) {
+  const labels = {
+    queued: "排队中",
+    preparing: "准备中",
+    audio_ready: "复用已下载音频",
+    downloading_audio: "下载音频",
+    done: "已完成",
+    error: "出错"
+  };
+  return labels[phase] || (phase ? phase.replaceAll("_", " ") : "处理中");
+}
+
 function phaseLabel(job, playbackMode = "none") {
   if (!job) {
-    return "No cached dub for this video.";
+    return "这个视频还没有缓存的配音。";
   }
   if (job.status === "queued") {
-    return job.queue_position ? `Queued. Position ${job.queue_position}.` : "Queued.";
+    return job.queue_position ? `排队中，当前位置：${job.queue_position}。` : "排队中。";
   }
   if (job.status === "running") {
     if (job.phase === "audio_ready") {
-      return "Running: reusing downloaded audio.";
+      return "处理中：正在复用已下载的音频。";
     }
-    const phase = job.phase ? job.phase.replaceAll("_", " ") : "running";
-    return `Running: ${phase}`;
+    return `处理中：${phaseName(job.phase)}`;
   }
   if (job.status === "done") {
     if (playbackMode === "original") {
-      return "Original audio is on for this tab.";
+      return "当前标签页正在使用原声。";
     }
-    return "Dub is on for this video.";
+    return "当前视频正在使用配音。";
   }
   if (job.status === "error") {
-    return `Error: ${job.error || "unknown error"}`;
+    return `出错：${job.error || "未知错误"}`;
   }
-  return job.status || "Unknown";
+  return job.status || "未知状态";
 }
 
 function renderState(tab, job, playbackMode = "none") {
   activeTabId = tab?.id || null;
   const isYoutube = Boolean(tab?.url && isYouTubeUrl(tab.url));
   const isVideo = Boolean(tab?.url && isYouTubeVideoUrl(tab.url));
-  videoTitleEl.textContent = isYoutube ? (tab.title || "YouTube video") : "No YouTube video detected";
+  videoTitleEl.textContent = isYoutube ? (tab.title || "YouTube 视频") : "未检测到 YouTube 视频";
   videoUrlEl.textContent = isYoutube ? tab.url : "";
 
   startButton.disabled = !isVideo || (job && ["queued", "running"].includes(job.status));
   overlayButton.disabled = !(job && job.status === "done" && isVideo);
-  overlayButton.textContent = playbackMode === "original" ? "Use Dubbed Audio" : "Use Original Audio";
-  setStatus(isVideo ? phaseLabel(job, playbackMode) : "Open a YouTube video first.");
+  overlayButton.textContent = playbackMode === "original" ? "使用配音" : "使用原声";
+  setStatus(isVideo ? phaseLabel(job, playbackMode) : "请先打开一个 YouTube 视频。");
 }
 
 async function checkBridge() {
@@ -98,10 +109,10 @@ async function checkBridge() {
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
-    bridgeStateEl.textContent = "Bridge online";
+    bridgeStateEl.textContent = "服务在线";
     return true;
   } catch {
-    bridgeStateEl.textContent = "Bridge offline";
+    bridgeStateEl.textContent = "服务离线";
     return false;
   }
 }
@@ -110,7 +121,7 @@ async function refresh() {
   await checkBridge();
   const state = await send({ type: "VIDEOLINGO_GET_STATE" });
   if (!state.ok) {
-    setStatus(state.error || "Failed to read extension state");
+    setStatus(state.error || "读取插件状态失败");
     return;
   }
 
@@ -126,14 +137,14 @@ async function refresh() {
 
 startButton.addEventListener("click", async () => {
   startButton.disabled = true;
-  setStatus("Sending YouTube URL and cookies to local bridge...");
+  setStatus("正在把 YouTube 链接和 Cookie 发送给本地服务...");
   try {
     const result = await send({
       type: "VIDEOLINGO_START_CURRENT_TAB",
       tabId: activeTabId
     });
     if (!result.ok) {
-      throw new Error(result.error || "Failed to start job");
+      throw new Error(result.error || "启动任务失败");
     }
     renderState({ id: activeTabId, url: videoUrlEl.textContent, title: videoTitleEl.textContent }, result.job, "dub");
     await refresh();
@@ -146,14 +157,14 @@ startButton.addEventListener("click", async () => {
 
 overlayButton.addEventListener("click", async () => {
   overlayButton.disabled = true;
-  setStatus("Switching audio...");
+  setStatus("正在切换音频...");
   try {
     const result = await send({
       type: "VIDEOLINGO_TOGGLE_CURRENT_DUB",
       tabId: activeTabId
     });
     if (!result.ok) {
-      throw new Error(result.error || "Failed to switch audio");
+      throw new Error(result.error || "切换音频失败");
     }
     renderState({ id: activeTabId, url: videoUrlEl.textContent, title: videoTitleEl.textContent }, result.job, result.playbackMode || "none");
   } catch (error) {

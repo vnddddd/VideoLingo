@@ -4,7 +4,13 @@
   }
   window.__videolingoContentLoaded = true;
 
+  const INSTANCE_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const CONTENT_PROTOCOL_VERSION = 2;
+  const SUPERSEDE_EVENT = "videolingo:supersede-content";
+  const DUB_AUDIO_SELECTOR = 'audio[data-videolingo-dub-audio="1"]';
+
   const STATE = {
+    active: true,
     jobId: null,
     audio: null,
     audioObjectUrl: null,
@@ -15,10 +21,23 @@
     listeners: [],
     dubAudios: new Set(),
     overlayVersion: 0,
-    originalVideoMuted: null,
-    originalVideoVolume: null,
+    originalVideoStates: new Map(),
+    videoWaiting: false,
+    lastVideoTime: null,
+    lastVideoCheckMs: 0,
+    videoStalledSinceMs: null,
+    urlWatchTimer: null,
     lastUrl: location.href
   };
+
+  document.addEventListener(SUPERSEDE_EVENT, (event) => {
+    if (event.detail?.instanceId && event.detail.instanceId !== INSTANCE_ID) {
+      deactivateInstance();
+    }
+  });
+  document.dispatchEvent(new CustomEvent(SUPERSEDE_EVENT, {
+    detail: { instanceId: INSTANCE_ID }
+  }));
 
   function findVideo() {
     return document.querySelector("video.html5-main-video") || document.querySelector("video");
@@ -111,6 +130,18 @@
     }
   }
 
+  function removeForeignDubAudios(currentAudio = null) {
+    for (const audio of document.querySelectorAll(DUB_AUDIO_SELECTOR)) {
+      if (audio === currentAudio) {
+        continue;
+      }
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+      audio.remove();
+    }
+  }
+
   function removeListeners() {
     for (const [target, event, handler, options] of STATE.listeners) {
       target.removeEventListener(event, handler, options);
@@ -167,43 +198,149 @@
     STATE.subtitleEl.style.bottom = `${Math.max(18, window.innerHeight - rect.bottom + 58)}px`;
   }
 
+  function allVideoElements() {
+    const videos = new Set(document.querySelectorAll("video"));
+    if (STATE.video) {
+      videos.add(STATE.video);
+    }
+    return Array.from(videos);
+  }
+
+  function resetVideoProgressWatch(video = STATE.video) {
+    STATE.lastVideoTime = video ? video.currentTime || 0 : null;
+    STATE.lastVideoCheckMs = performance.now();
+    STATE.videoStalledSinceMs = null;
+  }
+
+  function isVideoTimeStalled(video) {
+    const now = performance.now();
+    const currentTime = video.currentTime || 0;
+    if (STATE.lastVideoTime === null || !STATE.lastVideoCheckMs) {
+      STATE.lastVideoTime = currentTime;
+      STATE.lastVideoCheckMs = now;
+      STATE.videoStalledSinceMs = null;
+      return false;
+    }
+
+    if (Math.abs(currentTime - STATE.lastVideoTime) > 0.03) {
+      STATE.lastVideoTime = currentTime;
+      STATE.lastVideoCheckMs = now;
+      STATE.videoStalledSinceMs = null;
+      return false;
+    }
+
+    if (now - STATE.lastVideoCheckMs < 300) {
+      return false;
+    }
+
+    if (STATE.videoStalledSinceMs === null) {
+      STATE.videoStalledSinceMs = STATE.lastVideoCheckMs;
+    }
+    return now - STATE.videoStalledSinceMs >= 300;
+  }
+
+  function shouldPauseDubForVideo(video) {
+    if (video.paused || video.ended || video.seeking) {
+      return true;
+    }
+    if (STATE.videoWaiting) {
+      return true;
+    }
+    if (video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
+      return true;
+    }
+    return isVideoTimeStalled(video);
+  }
+
+  function markVideoBuffering() {
+    STATE.videoWaiting = true;
+    pauseAllDubAudios();
+  }
+
+  function markVideoReady() {
+    STATE.videoWaiting = false;
+    resetVideoProgressWatch();
+    syncAudio(false);
+  }
+
   async function syncAudio(forcePlay = false) {
+    if (!STATE.active) {
+      return;
+    }
     const video = STATE.video;
     const audio = STATE.audio;
     if (!video || !audio) {
       return;
     }
 
+    removeForeignDubAudios(audio);
     enforceOriginalMuted();
     pauseOtherDubAudios(audio);
     audio.playbackRate = video.playbackRate || 1;
+
+    if (shouldPauseDubForVideo(video)) {
+      audio.currentTime = video.currentTime || 0;
+      pauseAllDubAudios();
+      return;
+    }
+
     const drift = Math.abs((audio.currentTime || 0) - (video.currentTime || 0));
     if (drift > 0.18 || forcePlay) {
       audio.currentTime = video.currentTime || 0;
     }
 
-    if (video.paused) {
-      pauseAllDubAudios();
-      return;
-    }
-
     try {
       await audio.play();
+      if (shouldPauseDubForVideo(video)) {
+        audio.currentTime = video.currentTime || 0;
+        pauseAllDubAudios();
+      }
     } catch {
       // The next play/sync tick will retry after a user gesture.
     }
   }
 
   function enforceOriginalMuted() {
-    const video = STATE.video;
-    if (!video) {
-      return;
+    for (const video of allVideoElements()) {
+      if (!STATE.originalVideoStates.has(video)) {
+        STATE.originalVideoStates.set(video, {
+          muted: video.muted,
+          volume: video.volume,
+          defaultMuted: video.defaultMuted,
+          hadMutedAttribute: video.hasAttribute("muted")
+        });
+      }
+      if (!video.muted) {
+        video.muted = true;
+      }
+      if (video.volume !== 0) {
+        video.volume = 0;
+      }
+      video.defaultMuted = true;
+      video.setAttribute("muted", "");
     }
-    if (!video.muted) {
-      video.muted = true;
+  }
+
+  function restoreOriginalVideos() {
+    for (const [video, state] of STATE.originalVideoStates.entries()) {
+      try {
+        video.muted = state.muted;
+        video.volume = state.volume;
+        video.defaultMuted = state.defaultMuted;
+        if (state.hadMutedAttribute) {
+          video.setAttribute("muted", "");
+        } else {
+          video.removeAttribute("muted");
+        }
+      } catch {
+      }
     }
-    if (video.volume !== 0) {
-      video.volume = 0;
+    STATE.originalVideoStates.clear();
+  }
+
+  function enforceOriginalMutedOnMediaEvent(event) {
+    if (event.target && event.target.tagName === "VIDEO") {
+      enforceOriginalMuted();
     }
   }
 
@@ -243,7 +380,7 @@
     STATE.dubAudios.delete(audio);
   }
 
-  function stopCurrentOverlay() {
+  function stopCurrentOverlay({ restoreOriginal = true } = {}) {
     STATE.overlayVersion += 1;
     removeListeners();
     if (STATE.timer) {
@@ -261,13 +398,8 @@
       URL.revokeObjectURL(STATE.audioObjectUrl);
       STATE.audioObjectUrl = null;
     }
-    if (STATE.video) {
-      if (STATE.originalVideoMuted !== null) {
-        STATE.video.muted = STATE.originalVideoMuted;
-      }
-      if (STATE.originalVideoVolume !== null) {
-        STATE.video.volume = STATE.originalVideoVolume;
-      }
+    if (restoreOriginal) {
+      restoreOriginalVideos();
     }
     if (STATE.subtitleEl) {
       STATE.subtitleEl.textContent = "";
@@ -276,8 +408,20 @@
     STATE.jobId = null;
     STATE.cues = [];
     STATE.video = null;
-    STATE.originalVideoMuted = null;
-    STATE.originalVideoVolume = null;
+    STATE.videoWaiting = false;
+    resetVideoProgressWatch(null);
+  }
+
+  function deactivateInstance() {
+    if (!STATE.active) {
+      return;
+    }
+    STATE.active = false;
+    if (STATE.urlWatchTimer) {
+      clearInterval(STATE.urlWatchTimer);
+      STATE.urlWatchTimer = null;
+    }
+    stopCurrentOverlay({ restoreOriginal: true });
   }
 
   async function fetchBlobUrl(url) {
@@ -298,6 +442,9 @@
   }
 
   async function applyOverlay(message) {
+    if (!STATE.active) {
+      return;
+    }
     const video = findVideo();
     if (!video) {
       throw new Error("No YouTube video element found");
@@ -310,14 +457,13 @@
       return;
     }
 
-    stopCurrentOverlay();
+    stopCurrentOverlay({ restoreOriginal: false });
     const overlayVersion = STATE.overlayVersion;
     ensureOverlay();
+    removeForeignDubAudios();
 
     STATE.jobId = message.jobId;
     STATE.video = video;
-    STATE.originalVideoMuted = video.muted;
-    STATE.originalVideoVolume = video.volume;
     const subtitleText = await fetchText(message.subtitleUrl);
     if (overlayVersion !== STATE.overlayVersion) {
       return;
@@ -330,22 +476,41 @@
 
     STATE.cues = parseSrt(subtitleText);
     STATE.audioObjectUrl = audioObjectUrl;
-    const audio = new Audio(audioObjectUrl);
+    const audio = document.createElement("audio");
+    audio.dataset.videolingoDubAudio = "1";
+    audio.dataset.videolingoInstance = INSTANCE_ID;
+    audio.src = audioObjectUrl;
+    audio.style.display = "none";
+    document.documentElement.appendChild(audio);
     STATE.dubAudios.add(audio);
     STATE.audio = audio;
     STATE.audio.preload = "auto";
     STATE.audio.volume = 1;
     STATE.audio.playbackRate = video.playbackRate || 1;
+    resetVideoProgressWatch(video);
 
     enforceOriginalMuted();
 
-    addListener(video, "play", () => syncAudio(false));
+    addListener(video, "play", markVideoReady);
     addListener(video, "pause", () => syncAudio(false));
-    addListener(video, "seeking", () => syncAudio(false));
-    addListener(video, "seeked", () => syncAudio(false));
-    addListener(video, "playing", () => syncAudio(false));
+    addListener(video, "seeking", () => {
+      resetVideoProgressWatch();
+      syncAudio(false);
+    });
+    addListener(video, "seeked", markVideoReady);
+    addListener(video, "waiting", markVideoBuffering);
+    addListener(video, "stalled", markVideoBuffering);
+    addListener(video, "emptied", markVideoBuffering);
+    addListener(video, "error", markVideoBuffering);
+    addListener(video, "playing", markVideoReady);
+    addListener(video, "canplay", markVideoReady);
+    addListener(video, "canplaythrough", markVideoReady);
+    addListener(video, "timeupdate", markVideoReady);
     addListener(video, "ratechange", () => syncAudio(false));
     addListener(video, "volumechange", enforceOriginalMuted);
+    addListener(document, "play", enforceOriginalMutedOnMediaEvent, true);
+    addListener(document, "playing", enforceOriginalMutedOnMediaEvent, true);
+    addListener(document, "volumechange", enforceOriginalMutedOnMediaEvent, true);
     addListener(window, "resize", updatePosition);
     addListener(window, "scroll", updatePosition);
     addListener(window, "keydown", blockYoutubeVolumeKeys, true);
@@ -362,7 +527,29 @@
     await syncAudio(!video.paused);
   }
 
+  function currentOverlayState() {
+    const video = findVideo();
+    const hasCurrentAudio = Boolean(STATE.audio && STATE.dubAudios.has(STATE.audio));
+    if (STATE.active && hasCurrentAudio) {
+      removeForeignDubAudios(STATE.audio);
+      enforceOriginalMuted();
+      updatePosition();
+      updateSubtitle();
+    }
+    return {
+      ok: STATE.active,
+      protocolVersion: CONTENT_PROTOCOL_VERSION,
+      instanceId: INSTANCE_ID,
+      jobId: STATE.jobId,
+      hasAudio: hasCurrentAudio,
+      sameVideo: Boolean(video && STATE.video === video)
+    };
+  }
+
   function notifyUrlChanged() {
+    if (!STATE.active) {
+      return;
+    }
     if (STATE.lastUrl === location.href) {
       return;
     }
@@ -375,7 +562,7 @@
   }
 
   function watchUrlChanges() {
-    setInterval(notifyUrlChanged, 1000);
+    STATE.urlWatchTimer = setInterval(notifyUrlChanged, 1000);
     window.addEventListener("yt-navigate-finish", notifyUrlChanged);
     window.addEventListener("popstate", notifyUrlChanged);
 
@@ -396,7 +583,7 @@
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       if (message.type === "PING") {
-        sendResponse({ ok: true });
+        sendResponse({ ok: STATE.active, protocolVersion: CONTENT_PROTOCOL_VERSION, instanceId: INSTANCE_ID });
         return;
       }
       if (message.type === "VIDEOLINGO_APPLY_OVERLAY") {
@@ -407,6 +594,10 @@
       if (message.type === "VIDEOLINGO_STOP_OVERLAY") {
         stopCurrentOverlay();
         sendResponse({ ok: true });
+        return;
+      }
+      if (message.type === "VIDEOLINGO_GET_OVERLAY_STATE") {
+        sendResponse(currentOverlayState());
         return;
       }
       sendResponse({ ok: false, error: "Unknown message type" });

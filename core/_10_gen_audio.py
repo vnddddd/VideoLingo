@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import shutil
 import subprocess
@@ -14,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from core.utils import *
 from core.utils.models import *
 from core.asr_backend.audio_preprocess import get_audio_duration
+from core.prompts import get_subtitle_trim_prompt
 from core.tts_backend.tts_main import tts_main
 
 console = Console()
@@ -25,6 +27,19 @@ from core.tts_backend.tts_vad import (
     MIN_SEGMENT_DURATION_MS,
     ensure_non_empty_wav as _ensure_non_empty_wav,
 )
+
+
+class AudioFitTooFastError(Exception):
+    """Raised when fitting audio would exceed speed_factor.max."""
+
+    def __init__(self, input_file: str, needed_speed: float, max_speed: float):
+        super().__init__(
+            f"Cannot fit audio segment {input_file}: needs speed factor "
+            f"{needed_speed:.3f}, configured max is {max_speed:.3f}"
+        )
+        self.input_file = input_file
+        self.needed_speed = needed_speed
+        self.max_speed = max_speed
 
 def parse_df_srt_time(time_str: str) -> float:
     """Convert SRT time format to seconds"""
@@ -51,13 +66,14 @@ def adjust_audio_speed(input_file: str, output_file: str, speed_factor: float) -
             output_duration = get_audio_duration(output_file)
             expected_duration = input_duration / speed_factor
             diff = output_duration - expected_duration
-            # If the output duration exceeds the expected duration, but the input audio is less than 3 seconds, and the error is within 0.1 seconds, truncate to the expected length
+            # If ffmpeg leaves a short clip slightly long, retry with a refined
+            # speed factor. Do not hard-trim the tail; that can cut speech.
             if output_duration >= expected_duration * 1.02 and input_duration < 3 and diff <= 0.1:
-                audio = AudioSegment.from_wav(output_file)
-                trimmed_audio = audio[:(expected_duration * 1000)]  # pydub uses milliseconds
-                trimmed_audio.export(output_file, format="wav")
+                refined_speed_factor = speed_factor * (output_duration / expected_duration)
+                refined_cmd = ['ffmpeg', '-i', input_file, '-filter:a', f'atempo={refined_speed_factor}', '-y', output_file]
+                subprocess.run(refined_cmd, check=True, stderr=subprocess.PIPE)
                 _ensure_non_empty_wav(output_file)
-                print(f"Trimmed to expected duration: {expected_duration:.2f} seconds")
+                print(f"Refined speed adjustment to expected duration: {expected_duration:.2f} seconds")
                 return
             elif output_duration >= expected_duration * 1.02:
                 raise Exception(f"Audio duration abnormal: input file={input_file}, output file={output_file}, speed factor={speed_factor}, input duration={input_duration:.2f}s, output duration={output_duration:.2f}s")
@@ -70,18 +86,154 @@ def adjust_audio_speed(input_file: str, output_file: str, speed_factor: float) -
                 rprint(f"[red]Error: Audio speed adjustment failed, max retries reached ({max_retries})[/red]")
                 raise e
 
+def fit_audio_to_duration(input_file: str, target_duration: float, current_speed_factor: float) -> float:
+    """Speed up one generated segment so the chunk can fit its target timeline."""
+    min_duration = MIN_SEGMENT_DURATION_MS / 1000
+    if target_duration <= min_duration:
+        raise Exception(
+            f"Cannot fit audio segment {input_file}: target duration "
+            f"{target_duration:.3f}s is too short"
+        )
+
+    original_duration = get_audio_duration(input_file)
+    if original_duration <= target_duration:
+        return original_duration
+
+    extra_speed_factor = original_duration / target_duration
+    max_speed_factor = float(load_key("speed_factor.max"))
+    effective_speed_factor = current_speed_factor * extra_speed_factor
+    if effective_speed_factor > max_speed_factor:
+        raise AudioFitTooFastError(input_file, effective_speed_factor, max_speed_factor)
+
+    temp_file = f"{input_file}.fit.tmp.wav"
+    try:
+        adjust_audio_speed(input_file, temp_file, extra_speed_factor)
+        os.replace(temp_file, input_file)
+        _ensure_non_empty_wav(input_file)
+        return get_audio_duration(input_file)
+    finally:
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+
+
+def parse_lines_value(lines):
+    return eval(lines) if isinstance(lines, str) else list(lines)
+
+
+def get_row_speaker_id(row: pd.Series):
+    if 'speaker_id' not in row.index:
+        return None
+    speaker_id = row['speaker_id']
+    if speaker_id is None or (isinstance(speaker_id, float) and pd.isna(speaker_id)):
+        return None
+    return speaker_id
+
+
+def shorten_text_for_audio_fit(text: str, target_duration: float) -> str:
+    rprint(
+        f"[yellow]Audio still needs more than speed_factor.max; asking LLM to "
+        f"shorten subtitle for {target_duration:.2f}s raw TTS[/yellow]"
+    )
+    prompt = get_subtitle_trim_prompt(text, target_duration)
+
+    def valid_trim(response):
+        if 'result' not in response or not str(response['result']).strip():
+            return {'status': 'error', 'message': 'No result in response'}
+        return {'status': 'success', 'message': ''}
+
+    try:
+        response = ask_gpt(prompt, resp_type='json', log_title='audio_fit_sub_trim', valid_def=valid_trim)
+        shortened_text = str(response['result']).strip()
+    except Exception:
+        rprint("[bold red]LLM shortening failed; falling back to punctuation cleanup[/bold red]")
+        shortened_text = re.sub(r'[,.!?;:，。！？；：]', ' ', text).strip()
+
+    rprint(f"[green]Subtitle shortened for audio fit:[/green] {text} -> {shortened_text}")
+    return shortened_text or text
+
+
+def is_short_unshrinkable_text(text: str) -> bool:
+    compact = re.sub(r'[^\w\u4e00-\u9fff]', '', str(text))
+    return len(compact) <= 6
+
+
+def regenerate_adjusted_line(tasks_df: pd.DataFrame, row_index: int, line_index: int, text: str, speed_factor: float) -> str:
+    row = tasks_df.iloc[row_index]
+    number = row['number']
+    temp_file = TEMP_FILE_TEMPLATE.format(f"{number}_{line_index}")
+    output_file = OUTPUT_FILE_TEMPLATE.format(f"{number}_{line_index}")
+    for path in (temp_file, output_file):
+        if os.path.exists(path):
+            os.remove(path)
+
+    tts_main(text, temp_file, number, tasks_df, speaker_id=get_row_speaker_id(row))
+    _ensure_non_empty_wav(temp_file)
+    adjust_audio_speed(temp_file, output_file, speed_factor)
+
+    lines = parse_lines_value(tasks_df.at[row_index, 'lines'])
+    real_dur = 0
+    for idx in range(len(lines)):
+        line_temp_file = TEMP_FILE_TEMPLATE.format(f"{number}_{idx}")
+        if os.path.exists(line_temp_file):
+            real_dur += get_audio_duration(line_temp_file)
+    tasks_df.at[row_index, 'real_dur'] = real_dur
+    return output_file
+
+
+def fit_or_shorten_line(
+    tasks_df: pd.DataFrame,
+    row_index: int,
+    line_index: int,
+    output_file: str,
+    target_duration: float,
+    speed_factor: float,
+    max_rewrites: int = 2,
+) -> float:
+    max_speed_factor = float(load_key("speed_factor.max"))
+    raw_target_duration = target_duration * max_speed_factor * 0.95
+
+    for rewrite_attempt in range(max_rewrites + 1):
+        try:
+            return fit_audio_to_duration(output_file, target_duration, speed_factor)
+        except AudioFitTooFastError:
+            if rewrite_attempt >= max_rewrites:
+                raise
+
+            lines = parse_lines_value(tasks_df.at[row_index, 'lines'])
+            original_text = str(lines[line_index])
+            shortened_text = shorten_text_for_audio_fit(original_text, raw_target_duration)
+            if shortened_text == original_text:
+                if is_short_unshrinkable_text(original_text):
+                    duration = get_audio_duration(output_file)
+                    rprint(
+                        f"[yellow]Short subtitle cannot be shortened safely; keeping max-speed audio "
+                        f"and allowing {duration - target_duration:.3f}s overrun: {original_text}[/yellow]"
+                    )
+                    return duration
+                raise
+
+            lines[line_index] = shortened_text
+            tasks_df.at[row_index, 'lines'] = lines
+            tasks_df.at[row_index, 'text'] = ' '.join(str(line) for line in lines)
+            output_file = regenerate_adjusted_line(
+                tasks_df,
+                row_index,
+                line_index,
+                shortened_text,
+                speed_factor,
+            )
+
+    return get_audio_duration(output_file)
+
+
 def process_row(row: pd.Series, tasks_df: pd.DataFrame) -> Tuple[int, float]:
     """Helper function for processing single row data"""
     number = row['number']
-    lines = eval(row['lines']) if isinstance(row['lines'], str) else row['lines']
+    lines = parse_lines_value(row['lines'])
     # 🎙️ multi-speaker (plan_multispeaker C4-S3): forward per-row speaker_id to
     # tts_main so the router can pick the right voice/method. Column is created
     # by _8_1_audio_task.py from the sidecar; absent or NaN ⇒ legacy single-voice.
-    speaker_id = None
-    if 'speaker_id' in row.index:
-        _sid = row['speaker_id']
-        if _sid is not None and not (isinstance(_sid, float) and pd.isna(_sid)):
-            speaker_id = _sid
+    speaker_id = get_row_speaker_id(row)
     real_dur = 0
     for line_index, line in enumerate(lines):
         temp_file = TEMP_FILE_TEMPLATE.format(f"{number}_{line_index}")
@@ -156,7 +308,9 @@ def process_chunk(chunk_df: pd.DataFrame, accept: float, min_speed: float) -> tu
     else:
         speed_factor = chunk_durs / (tol_durs-speed_var_error)
         keep_gaps = False
-        
+
+    max_speed = float(load_key("speed_factor.max"))
+    speed_factor = min(speed_factor, max_speed)
     return round(speed_factor, 3), keep_gaps
 
 def merge_chunks(tasks_df: pd.DataFrame) -> pd.DataFrame:
@@ -199,7 +353,7 @@ def merge_chunks(tasks_df: pd.DataFrame) -> pd.DataFrame:
         })
         for _, r in chunk_df.iterrows():
             number = r['number']
-            lines = eval(r['lines']) if isinstance(r['lines'], str) else r['lines']
+            lines = parse_lines_value(r['lines'])
             for line_index, _line in enumerate(lines):
                 jobs.append((
                     number,
@@ -253,7 +407,7 @@ def merge_chunks(tasks_df: pd.DataFrame) -> pd.DataFrame:
                 cur_time += chunk_df.iloc[i - 1]['gap'] / speed_factor
             new_sub_times = []
             number = row['number']
-            lines = eval(row['lines']) if isinstance(row['lines'], str) else row['lines']
+            lines = parse_lines_value(row['lines'])
             for line_index, _line in enumerate(lines):
                 # Step2: Look up the duration produced by Pass 1 (ffmpeg already ran)
                 ad_dur = durations[(number, line_index)]
@@ -268,28 +422,31 @@ def merge_chunks(tasks_df: pd.DataFrame) -> pd.DataFrame:
         # Step5: Check if the last row exceeds the range
         if cur_time > chunk_end_time:
             time_diff = cur_time - chunk_end_time
-            if time_diff <= 0.6:  # If exceeding time is within 0.6 seconds, truncate the last audio
-                rprint(f"[yellow]Warning: Chunk {chunk_start} to {index} exceeds by {time_diff:.3f}s, truncating last audio[/yellow]")
-                # Get the last audio file
-                last_number = tasks_df.iloc[index]['number']
-                last_lines = eval(tasks_df.iloc[index]['lines']) if isinstance(tasks_df.iloc[index]['lines'], str) else tasks_df.iloc[index]['lines']
-                last_line_index = len(last_lines) - 1
-                last_file = OUTPUT_FILE_TEMPLATE.format(f"{last_number}_{last_line_index}")
+            last_number = tasks_df.iloc[index]['number']
+            last_lines = parse_lines_value(tasks_df.iloc[index]['lines'])
+            last_line_index = len(last_lines) - 1
+            last_file = OUTPUT_FILE_TEMPLATE.format(f"{last_number}_{last_line_index}")
 
-                # Calculate the duration to keep
-                audio = AudioSegment.from_wav(last_file)
-                original_duration = len(audio) / 1000  # Convert to seconds
-                new_duration = original_duration - time_diff
-                trimmed_audio = audio[:(new_duration * 1000)]  # pydub uses milliseconds
-                trimmed_audio.export(last_file, format="wav")
-                _ensure_non_empty_wav(last_file)
+            audio = AudioSegment.from_wav(last_file)
+            original_duration = len(audio) / 1000
+            target_duration = original_duration - time_diff
+            rprint(
+                f"[yellow]Warning: Chunk {chunk_start} to {index} exceeds by "
+                f"{time_diff:.3f}s, fitting last audio with speed-up[/yellow]"
+            )
+            final_duration = fit_or_shorten_line(
+                tasks_df,
+                index,
+                last_line_index,
+                last_file,
+                target_duration,
+                speed_factor,
+            )
 
-                # Update the last timestamp
-                last_times = tasks_df.at[index, 'new_sub_times']
-                last_times[-1][1] = chunk_end_time
-                tasks_df.at[index, 'new_sub_times'] = last_times
-            else:
-                raise Exception(f"Chunk {chunk_start} to {index} exceeds the chunk end time {chunk_end_time:.2f} seconds with current time {cur_time:.2f} seconds")
+            # Update the last timestamp
+            last_times = tasks_df.at[index, 'new_sub_times']
+            last_times[-1][1] = last_times[-1][0] + final_duration
+            tasks_df.at[index, 'new_sub_times'] = last_times
 
     rprint("[bold green]OK: Audio chunks processing completed![/bold green]")
     return tasks_df

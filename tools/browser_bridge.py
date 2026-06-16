@@ -50,6 +50,57 @@ PLUGIN_AUDIO_LOUDNORM_FILTER = "loudnorm=I=-13:TP=-1.5:LRA=11"
 jobs_lock = threading.RLock()
 run_lock = threading.Lock()
 jobs: dict[str, dict[str, Any]] = {}
+config_lock = threading.RLock()
+
+PLUGIN_CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
+    "display_language": {"type": "str"},
+    "api.key": {"type": "str"},
+    "api.base_url": {"type": "str"},
+    "api.model": {"type": "str"},
+    "api.llm_support_json": {"type": "bool"},
+    "api.max_workers": {"type": "int", "min": 1, "max": 256},
+    "target_language": {"type": "str"},
+    "whisper.language": {"type": "str"},
+    "whisper.runtime": {"type": "str"},
+    "whisper.max_workers": {"type": "int", "min": 1, "max": 64},
+    "whisper.whisperX_302_api_key": {"type": "str"},
+    "whisper.elevenlabs_api_key": {"type": "str"},
+    "whisper.soniox_api_key": {"type": "str"},
+    "whisper.soniox_diarize": {"type": "bool"},
+    "multi_speaker_enabled": {"type": "bool"},
+    "demucs": {"type": "bool"},
+    "demucs_backend": {"type": "str"},
+    "hf_demucs.hf_token": {"type": "str"},
+    "burn_subtitles": {"type": "bool"},
+    "tts_method": {"type": "str"},
+    "tts_max_workers": {"type": "int", "min": 1, "max": 256},
+    "qwen3_tts.api_key": {"type": "str"},
+    "qwen3_tts.region": {"type": "str"},
+    "qwen3_tts.model": {"type": "str"},
+    "qwen3_tts.voice": {"type": "str"},
+    "qwen3_tts.language_type": {"type": "str"},
+    "sf_fish_tts.api_key": {"type": "str"},
+    "sf_fish_tts.mode": {"type": "str"},
+    "sf_fish_tts.voice": {"type": "str"},
+    "openai_tts.api_key": {"type": "str"},
+    "openai_tts.voice": {"type": "str"},
+    "azure_tts.api_key": {"type": "str"},
+    "azure_tts.voice": {"type": "str"},
+    "fish_tts.api_key": {"type": "str"},
+    "fish_tts.character": {"type": "str"},
+    "edge_tts.voice": {"type": "str"},
+    "gpt_sovits.character": {"type": "str"},
+    "gpt_sovits.refer_mode": {"type": "int", "min": 1, "max": 3},
+    "sf_cosyvoice2.api_key": {"type": "str"},
+    "f5tts.302_api": {"type": "str"},
+    "mimo_tts.base_url": {"type": "str"},
+    "mimo_tts.api_key": {"type": "str"},
+    "mimo_tts.model": {"type": "str"},
+    "mimo_tts.voice": {"type": "str"},
+    "mimo_tts.voice_description": {"type": "str"},
+    "indextts2.base_url": {"type": "str_or_list"},
+    "indextts2.emo_weight": {"type": "float", "min": 0, "max": 1},
+}
 
 
 def _now() -> float:
@@ -475,6 +526,125 @@ def _update_config_cookie_path(cookie_file: Path) -> None:
         print(f"[WARN] Failed to update config.yaml youtube.cookies_path: {exc}", flush=True)
 
 
+def _load_config_yaml() -> tuple[Any, Any]:
+    _ensure_config_file()
+    from ruamel.yaml import YAML
+
+    yaml = YAML()
+    yaml.preserve_quotes = True
+    with CONFIG_FILE.open("r", encoding="utf-8") as f:
+        data = yaml.load(f)
+    if not isinstance(data, dict):
+        raise ValueError("config.yaml must contain a mapping")
+    return yaml, data
+
+
+def _get_nested(data: dict[str, Any], key: str) -> Any:
+    current: Any = data
+    for part in key.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def _set_nested(data: dict[str, Any], key: str, value: Any) -> None:
+    current: Any = data
+    parts = key.split(".")
+    for part in parts[:-1]:
+        if not isinstance(current.get(part), dict):
+            current[part] = {}
+        current = current[part]
+    current[parts[-1]] = value
+
+
+def _coerce_config_value(key: str, value: Any) -> Any:
+    spec = PLUGIN_CONFIG_SCHEMA[key]
+    value_type = spec["type"]
+
+    if value_type == "str":
+        return "" if value is None else str(value)
+    if value_type == "bool":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.lower() in {"true", "false"}:
+            return value.lower() == "true"
+        raise ValueError(f"{key} must be a boolean")
+    if value_type == "int":
+        try:
+            coerced = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be an integer") from exc
+        minimum = int(spec.get("min", coerced))
+        maximum = int(spec.get("max", coerced))
+        if coerced < minimum or coerced > maximum:
+            raise ValueError(f"{key} must be between {minimum} and {maximum}")
+        return coerced
+    if value_type == "float":
+        try:
+            coerced = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be a number") from exc
+        minimum = float(spec.get("min", coerced))
+        maximum = float(spec.get("max", coerced))
+        if coerced < minimum or coerced > maximum:
+            raise ValueError(f"{key} must be between {minimum} and {maximum}")
+        return coerced
+    if value_type == "str_or_list":
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return "" if value is None else str(value)
+    raise ValueError(f"Unsupported config type for {key}")
+
+
+def _read_plugin_config() -> tuple[int, dict[str, Any]]:
+    try:
+        with config_lock:
+            _yaml, data = _load_config_yaml()
+            values = {key: _get_nested(data, key) for key in PLUGIN_CONFIG_SCHEMA}
+            fish_characters = _get_nested(data, "fish_tts.character_id_dict") or {}
+            if not isinstance(fish_characters, dict):
+                fish_characters = {}
+        return 200, {
+            "ok": True,
+            "values": values,
+            "dynamic_options": {
+                "fish_tts.character": list(fish_characters.keys()),
+            },
+        }
+    except Exception as exc:  # noqa: BLE001
+        return 500, {"ok": False, "error": f"Failed to read config.yaml: {exc}"}
+
+
+def _save_plugin_config(payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    values = payload.get("values")
+    if not isinstance(values, dict):
+        return 400, {"ok": False, "error": "values must be an object"}
+
+    unknown = sorted(str(key) for key in values if str(key) not in PLUGIN_CONFIG_SCHEMA)
+    if unknown:
+        return 400, {"ok": False, "error": f"Unsupported config key(s): {', '.join(unknown)}"}
+
+    try:
+        coerced = {
+            str(key): _coerce_config_value(str(key), value)
+            for key, value in values.items()
+        }
+    except ValueError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+
+    try:
+        with config_lock:
+            yaml, data = _load_config_yaml()
+            for key, value in coerced.items():
+                _set_nested(data, key, value)
+            with CONFIG_FILE.open("w", encoding="utf-8") as f:
+                yaml.dump(data, f)
+        return _read_plugin_config()
+    except Exception as exc:  # noqa: BLE001
+        return 500, {"ok": False, "error": f"Failed to save config.yaml: {exc}"}
+
+
 def _copy_outputs(job_id: str) -> dict[str, str]:
     job_dir = JOBS_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -740,6 +910,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
             _write_json(self, 200, {"ok": True, "active_job": _public_job(active) if active else None})
             return
 
+        if parts == ["config"]:
+            status, response = _read_plugin_config()
+            _write_json(self, status, response)
+            return
+
         if parts == ["jobs"]:
             with jobs_lock:
                 payload = [_public_job(job) for job in sorted(jobs.values(), key=lambda item: item["created_at"], reverse=True)]
@@ -795,6 +970,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
         if parts == ["jobs"]:
             status, response = _start_job(payload)
+            _write_json(self, status, response)
+            return
+
+        if parts == ["config"]:
+            status, response = _save_plugin_config(payload)
             _write_json(self, status, response)
             return
 

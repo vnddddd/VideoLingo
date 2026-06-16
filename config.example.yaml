@@ -229,7 +229,7 @@ f5tts:
 speed_factor:
   min: 1
   accept: 1.2 # Maximum acceptable speed
-  max: 1.4
+  max: 1.5
 
 # *Merge audio configuration
 min_subtitle_duration: 2.5 # Minimum subtitle duration, will be forcibly extended

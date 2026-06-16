@@ -1,5 +1,6 @@
 const BRIDGE_ORIGIN = "http://127.0.0.1:8765";
 const POLL_ALARM = "videolingo-poll";
+const CONTENT_PROTOCOL_VERSION = 2;
 const tabDubPrefs = new Map();
 
 function isYouTubeUrl(url) {
@@ -123,18 +124,31 @@ function absoluteOutputUrls(job) {
 
 async function ensureContentScript(tabId) {
   try {
-    await chrome.tabs.sendMessage(tabId, { type: "PING" });
+    const response = await chrome.tabs.sendMessage(tabId, { type: "PING" });
+    if (response && response.ok && response.protocolVersion === CONTENT_PROTOCOL_VERSION) {
+      return;
+    }
+    await chrome.tabs.sendMessage(tabId, { type: "VIDEOLINGO_STOP_OVERLAY" }).catch(() => {});
   } catch {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ["content.js"]
-    });
   }
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["content.js"]
+  });
 }
 
 async function stopOverlayToTab(tabId) {
   await ensureContentScript(tabId);
   await chrome.tabs.sendMessage(tabId, { type: "VIDEOLINGO_STOP_OVERLAY" });
+}
+
+async function overlayStateForTab(tabId) {
+  await ensureContentScript(tabId);
+  try {
+    return await chrome.tabs.sendMessage(tabId, { type: "VIDEOLINGO_GET_OVERLAY_STATE" });
+  } catch {
+    return null;
+  }
 }
 
 async function applyOverlayToTab(tabId, job) {
@@ -143,6 +157,10 @@ async function applyOverlayToTab(tabId, job) {
     throw new Error("Job outputs are not ready");
   }
   await ensureContentScript(tabId);
+  const state = await overlayStateForTab(tabId);
+  if (state && state.ok && state.jobId === job.id && state.hasAudio && state.sameVideo) {
+    return;
+  }
   await chrome.tabs.sendMessage(tabId, {
     type: "VIDEOLINGO_APPLY_OVERLAY",
     jobId: job.id,
