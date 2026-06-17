@@ -44,6 +44,7 @@ PLUGIN_AUDIO_FILE = "dub_loudnorm.mp3"
 WORK_OUTPUT_DIRNAME = "work_output"
 JOB_COOKIE_FILE = "cookies.txt"
 OUTPUT_JOB_MARKER = ".browser_bridge_job.json"
+SPEAKER_WAITING_STATUS = "waiting_speaker"
 # Keep plugin playback loudness aligned with core/_12_dub_to_vid.py final video output.
 PLUGIN_AUDIO_LOUDNORM_FILTER = "loudnorm=I=-13:TP=-1.5:LRA=11"
 
@@ -316,7 +317,8 @@ def _find_latest_video_job_unlocked(video_key: str) -> dict[str, Any] | None:
     candidates = [
         job
         for job in jobs.values()
-        if job.get("video_key") == video_key and job.get("status") in {"queued", "running", "done", "error"}
+        if job.get("video_key") == video_key
+        and job.get("status") in {"queued", "running", SPEAKER_WAITING_STATUS, "done", "error"}
     ]
     if not candidates:
         return None
@@ -344,6 +346,9 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
             "subtitle": f"/jobs/{job_id}/dub.srt",
             "log": f"/jobs/{job_id}/log.txt",
         }
+    if job.get("status") == SPEAKER_WAITING_STATUS:
+        job_id = job["id"]
+        data["speaker_preview"] = f"/jobs/{job_id}/speaker-preview"
     return data
 
 
@@ -405,6 +410,13 @@ def _active_job() -> dict[str, Any] | None:
         ]
         if queued:
             return sorted(queued, key=lambda item: item.get("created_at", 0))[0]
+        waiting = [
+            job
+            for job in jobs.values()
+            if job.get("status") == SPEAKER_WAITING_STATUS
+        ]
+        if waiting:
+            return sorted(waiting, key=lambda item: item.get("updated_at", 0), reverse=True)[0]
     return None
 
 
@@ -645,6 +657,97 @@ def _save_plugin_config(payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         return 500, {"ok": False, "error": f"Failed to save config.yaml: {exc}"}
 
 
+def _output_speaker_preview_pending() -> bool:
+    return (OUTPUT_DIR / "preview" / ".pending").exists()
+
+
+def _job_preview_dir(job_id: str) -> Path:
+    return _job_work_output_dir(job_id) / "preview"
+
+
+def _job_speaker_manifest(job_id: str) -> list[dict[str, Any]]:
+    manifest_file = _job_preview_dir(job_id) / "manifest.json"
+    if not manifest_file.exists():
+        return []
+    try:
+        data = json.loads(manifest_file.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+
+    manifest: list[dict[str, Any]] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        entry = dict(item)
+        wav_name = Path(str(entry.get("wav") or "")).name
+        txt_name = Path(str(entry.get("txt") or "")).name
+        if wav_name:
+            entry["audio_url"] = f"/jobs/{job_id}/preview/{wav_name}"
+        if txt_name:
+            entry["text_url"] = f"/jobs/{job_id}/preview/{txt_name}"
+        manifest.append(entry)
+    return manifest
+
+
+def _get_speaker_preview(job_id: str) -> tuple[int, dict[str, Any]]:
+    with jobs_lock:
+        job = jobs.get(job_id)
+        public_job = _public_job(job) if job else None
+    if not job:
+        return 404, {"ok": False, "error": "job not found"}
+    return 200, {
+        "ok": True,
+        "job": public_job,
+        "pending": job.get("status") == SPEAKER_WAITING_STATUS,
+        "manifest": _job_speaker_manifest(job_id),
+    }
+
+
+def _speaker_preview_file_path(job_id: str, filename: str) -> Path | None:
+    if not re.fullmatch(r"spk_\d+\.(wav|txt)", filename):
+        return None
+    path = _job_preview_dir(job_id) / filename
+    if not path.exists():
+        return None
+    return path
+
+
+def _confirm_speaker_preview(job_id: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    picks = payload.get("picks")
+    if not isinstance(picks, dict):
+        return 400, {"ok": False, "error": "picks must be an object"}
+
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job:
+            return 404, {"ok": False, "error": "job not found"}
+        if job.get("status") != SPEAKER_WAITING_STATUS:
+            return 409, {"ok": False, "error": "job is not waiting for speaker picks"}
+
+    try:
+        with run_lock:
+            _restore_job_workspace(job_id)
+            from core import _3_speaker_preview
+
+            _3_speaker_preview.confirm_picks(picks)
+            _snapshot_output_to_job_workspace(job_id)
+            _set_job(
+                job_id,
+                status="queued",
+                phase="queued",
+                speaker_preview_confirmed_at=_now(),
+                finished_at=None,
+            )
+        _start_job_thread(job_id)
+        with jobs_lock:
+            updated = jobs.get(job_id)
+        return 202, {"ok": True, "job": _public_job(updated) if updated else None}
+    except Exception as exc:  # noqa: BLE001
+        return 500, {"ok": False, "error": f"Failed to confirm speaker picks: {exc}"}
+
+
 def _copy_outputs(job_id: str) -> dict[str, str]:
     job_dir = JOBS_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -761,6 +864,16 @@ def _run_job(job_id: str) -> None:
             _set_job(job_id, phase="transcribing_translating_dubbing")
             _run_pipeline(log_file)
             _snapshot_output_to_job_workspace(job_id)
+            if _output_speaker_preview_pending():
+                manifest = _job_speaker_manifest(job_id)
+                _set_job(
+                    job_id,
+                    status=SPEAKER_WAITING_STATUS,
+                    phase="speaker_picker",
+                    speaker_count=len(manifest),
+                    waiting_since=_now(),
+                )
+                return
 
             outputs = _copy_outputs(job_id)
             _set_job(job_id, status="done", phase="done", outputs=outputs, finished_at=_now())
@@ -937,6 +1050,30 @@ class BridgeHandler(BaseHTTPRequestHandler):
             _write_json(self, 200, _public_job(job))
             return
 
+        if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "speaker-preview":
+            status, response = _get_speaker_preview(parts[1])
+            _write_json(self, status, response)
+            return
+
+        if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "preview":
+            job_id, filename = parts[1], parts[3]
+            path = _speaker_preview_file_path(job_id, filename)
+            if path is None:
+                _write_json(self, 404, {"error": "file not found"})
+                return
+            content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            if filename.endswith(".txt"):
+                content_type = "text/plain; charset=utf-8"
+            data = path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            _write_cors_headers(self)
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
         if len(parts) == 3 and parts[0] == "jobs":
             job_id, filename = parts[1], parts[2]
             path = _job_file_path(job_id, filename)
@@ -975,6 +1112,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
         if parts == ["config"]:
             status, response = _save_plugin_config(payload)
+            _write_json(self, status, response)
+            return
+
+        if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "speaker-preview":
+            status, response = _confirm_speaker_preview(parts[1], payload)
             _write_json(self, status, response)
             return
 

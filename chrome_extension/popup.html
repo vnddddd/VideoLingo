@@ -22,6 +22,188 @@
       <button id="overlayButton" type="button" disabled>使用原声</button>
 
       <div id="status">请先启动本地服务。</div>
+
+      <section id="speakerPicker" class="speaker-picker hidden">
+        <div class="speaker-picker-head">
+          <strong>多人配音选择</strong>
+          <span id="speakerPickerCount"></span>
+        </div>
+        <div id="speakerRows"></div>
+        <button id="speakerContinueButton" type="button">提交并继续配音</button>
+        <div id="speakerPickerStatus"></div>
+      </section>
+
+      <details id="configPanel" data-details-key="configPanel" open>
+        <summary>配置设置</summary>
+        <div class="config-body">
+          <div class="field">
+            <label for="display_language">Display Language</label>
+            <select id="display_language" data-config-key="display_language"></select>
+          </div>
+
+          <details class="config-group" data-details-key="llmConfig" open>
+            <summary>LLM 配置</summary>
+            <div class="field">
+              <label for="api_key">API 密钥</label>
+              <input id="api_key" data-config-key="api.key" type="password" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="api_base_url">BASE_URL</label>
+              <input id="api_base_url" data-config-key="api.base_url" type="text">
+            </div>
+            <div class="field">
+              <label for="api_model">模型</label>
+              <input id="api_model" data-config-key="api.model" type="text" list="knownModels">
+              <datalist id="knownModels"></datalist>
+            </div>
+            <label class="toggle-row">
+              <input data-config-key="api.llm_support_json" type="checkbox">
+              <span>LLM JSON格式支持</span>
+            </label>
+            <div class="field">
+              <label for="api_max_workers">LLM Concurrency</label>
+              <input id="api_max_workers" data-config-key="api.max_workers" type="number" min="1" step="1">
+            </div>
+          </details>
+
+          <details class="config-group" data-details-key="subtitleConfig" open>
+            <summary>字幕设置</summary>
+            <div class="grid-2">
+              <div class="field">
+                <label for="whisper_language">识别语言</label>
+                <select id="whisper_language" data-config-key="whisper.language"></select>
+              </div>
+              <div class="field">
+                <label for="target_language">目标语言</label>
+                <input id="target_language" data-config-key="target_language" type="text">
+              </div>
+            </div>
+            <div class="field">
+              <label for="whisper_runtime">WhisperX 运行环境</label>
+              <select id="whisper_runtime" data-config-key="whisper.runtime"></select>
+            </div>
+            <div class="field conditional" data-show-when="whisper.runtime=cloud">
+              <label for="whisper_302_key">WhisperX 302ai API</label>
+              <input id="whisper_302_key" data-config-key="whisper.whisperX_302_api_key" type="password" autocomplete="off">
+            </div>
+            <div class="field conditional" data-show-when="whisper.runtime=elevenlabs">
+              <label for="elevenlabs_key">ElevenLabs API</label>
+              <input id="elevenlabs_key" data-config-key="whisper.elevenlabs_api_key" type="password" autocomplete="off">
+            </div>
+            <div class="field conditional" data-show-when="whisper.runtime=soniox">
+              <label for="soniox_key">Soniox API</label>
+              <input id="soniox_key" data-config-key="whisper.soniox_api_key" type="password" autocomplete="off">
+            </div>
+            <label class="toggle-row conditional" data-show-when="whisper.runtime=soniox">
+              <input data-config-key="whisper.soniox_diarize" type="checkbox">
+              <span>Soniox 说话人分离</span>
+            </label>
+            <label class="toggle-row">
+              <input data-config-key="multi_speaker_enabled" type="checkbox">
+              <span>多说话人配音</span>
+            </label>
+            <div class="field">
+              <label for="whisper_max_workers">ASR Clip Concurrency</label>
+              <input id="whisper_max_workers" data-config-key="whisper.max_workers" type="number" min="1" step="1">
+            </div>
+            <label class="toggle-row">
+              <input data-config-key="demucs" type="checkbox">
+              <span>人声分离增强</span>
+            </label>
+            <div class="field conditional" data-show-when="demucs=true">
+              <label for="demucs_backend">Demucs Backend</label>
+              <select id="demucs_backend" data-config-key="demucs_backend"></select>
+            </div>
+            <div class="field conditional" data-show-when="demucs=true;demucs_backend=hf_space">
+              <label for="hf_demucs_token">HF Token</label>
+              <input id="hf_demucs_token" data-config-key="hf_demucs.hf_token" type="password" autocomplete="off">
+            </div>
+            <label class="toggle-row">
+              <input data-config-key="burn_subtitles" type="checkbox">
+              <span>烧录字幕</span>
+            </label>
+          </details>
+
+          <details class="config-group" data-details-key="dubbingConfig" open>
+            <summary>配音设置</summary>
+            <div class="field">
+              <label for="tts_method">TTS方法</label>
+              <select id="tts_method" data-config-key="tts_method"></select>
+            </div>
+            <div class="field">
+              <label for="tts_max_workers">TTS Concurrency</label>
+              <input id="tts_max_workers" data-config-key="tts_max_workers" type="number" min="1" step="1">
+            </div>
+
+            <div class="tts-settings" data-tts-panel="qwen3_tts">
+              <div class="field">
+                <label for="qwen3_api_key">DashScope API Key</label>
+                <input id="qwen3_api_key" data-config-key="qwen3_tts.api_key" type="password" autocomplete="off">
+              </div>
+              <div class="field">
+                <label for="qwen3_model">Qwen3 TTS Model</label>
+                <select id="qwen3_model" data-config-key="qwen3_tts.model"></select>
+              </div>
+              <div class="field">
+                <label for="qwen3_voice">Qwen3 TTS Voice</label>
+                <select id="qwen3_voice" data-config-key="qwen3_tts.voice"></select>
+              </div>
+              <div class="field">
+                <label for="qwen3_language_type">Qwen3 TTS Language</label>
+                <select id="qwen3_language_type" data-config-key="qwen3_tts.language_type"></select>
+              </div>
+              <div class="field">
+                <label for="qwen3_region">Qwen3 TTS Region</label>
+                <select id="qwen3_region" data-config-key="qwen3_tts.region"></select>
+              </div>
+            </div>
+
+            <div class="tts-settings" data-tts-panel="sf_fish_tts">
+              <div class="field"><label>SiliconFlow API Key</label><input data-config-key="sf_fish_tts.api_key" type="password" autocomplete="off"></div>
+              <div class="field"><label>Mode Selection</label><select data-config-key="sf_fish_tts.mode"></select></div>
+              <div class="field"><label>Voice</label><input data-config-key="sf_fish_tts.voice" type="text"></div>
+            </div>
+            <div class="tts-settings" data-tts-panel="openai_tts">
+              <div class="field"><label>302ai API</label><input data-config-key="openai_tts.api_key" type="password" autocomplete="off"></div>
+              <div class="field"><label>OpenAI Voice</label><input data-config-key="openai_tts.voice" type="text"></div>
+            </div>
+            <div class="tts-settings" data-tts-panel="azure_tts">
+              <div class="field"><label>302ai API</label><input data-config-key="azure_tts.api_key" type="password" autocomplete="off"></div>
+              <div class="field"><label>Azure Voice</label><input data-config-key="azure_tts.voice" type="text"></div>
+            </div>
+            <div class="tts-settings" data-tts-panel="fish_tts">
+              <div class="field"><label>302ai API</label><input data-config-key="fish_tts.api_key" type="password" autocomplete="off"></div>
+              <div class="field"><label>Fish TTS Character</label><select data-config-key="fish_tts.character"></select></div>
+            </div>
+            <div class="tts-settings" data-tts-panel="edge_tts">
+              <div class="field"><label>Edge TTS Voice</label><input data-config-key="edge_tts.voice" type="text"></div>
+            </div>
+            <div class="tts-settings" data-tts-panel="gpt_sovits">
+              <div class="field"><label>SoVITS Character</label><input data-config-key="gpt_sovits.character" type="text"></div>
+              <div class="field"><label>Refer Mode</label><select data-config-key="gpt_sovits.refer_mode"></select></div>
+            </div>
+            <div class="tts-settings" data-tts-panel="sf_cosyvoice2">
+              <div class="field"><label>SiliconFlow API Key</label><input data-config-key="sf_cosyvoice2.api_key" type="password" autocomplete="off"></div>
+            </div>
+            <div class="tts-settings" data-tts-panel="f5tts">
+              <div class="field"><label>302ai API</label><input data-config-key="f5tts.302_api" type="password" autocomplete="off"></div>
+            </div>
+            <div class="tts-settings" data-tts-panel="mimo_tts">
+              <div class="field"><label>Xiaomi MiMo Base URL</label><input data-config-key="mimo_tts.base_url" type="text"></div>
+              <div class="field"><label>Xiaomi MiMo API Key</label><input data-config-key="mimo_tts.api_key" type="password" autocomplete="off"></div>
+              <div class="field"><label>MiMo TTS Model</label><select data-config-key="mimo_tts.model"></select></div>
+              <div class="field conditional" data-show-when="mimo_tts.model=mimo-v2.5-tts"><label>MiMo Preset Voice</label><select data-config-key="mimo_tts.voice"></select></div>
+              <div class="field conditional" data-show-when="mimo_tts.model=mimo-v2.5-tts-voicedesign"><label>MiMo Voice Description</label><textarea data-config-key="mimo_tts.voice_description" rows="4"></textarea></div>
+            </div>
+            <div class="tts-settings" data-tts-panel="indextts2">
+              <div class="field"><label>IndexTTS-2 Base URL(s)</label><textarea data-config-key="indextts2.base_url" rows="4"></textarea></div>
+              <div class="field"><label>IndexTTS-2 Emotion Weight</label><input data-config-key="indextts2.emo_weight" type="number" min="0" max="1" step="0.05"></div>
+            </div>
+          </details>
+
+          <div id="configStatus"></div>
+        </div>
+      </details>
     </main>
     <script src="popup.js"></script>
   </body>

@@ -34,6 +34,7 @@ Picker shape (input to this module) — see ``core._3_speaker_preview.confirm_pi
 
     speaker_voice_map = {
         "<sid>": {"mode": "fixed",            "voice": "<tts_voice_name>"},
+        "<sid>": {"mode": "qwen3_tts",        "voice": "<qwen3_voice_name>"},
         "<sid>": {"mode": "mimo_voicedesign", "voice_description": "<prompt>"},
         "<sid>": {"mode": "clone",            "ref_wav": "<abs path>"},
         "<sid>": {"mode": "default"},
@@ -55,6 +56,7 @@ from core.utils.config_utils import load_key
 # Modes accepted in speaker_voice_map entries. Kept in sync with
 # core/st_utils/speaker_picker.py constants.
 _MODE_FIXED = "fixed"
+_MODE_QWEN3_TTS = "qwen3_tts"
 _MODE_MIMO_VOICE_DESIGN = "mimo_voicedesign"
 _MODE_CLONE = "clone"
 _MODE_DEFAULT = "default"
@@ -62,6 +64,7 @@ _MODE_DEFAULT = "default"
 # Backend used whenever a speaker is configured for voice cloning. Matches
 # the plan (C4 step in plan_multispeaker): clone -> gpt_sovits + spk{i}.wav.
 _CLONE_BACKEND = "gpt_sovits"
+_QWEN3_BACKEND = "qwen3_tts"
 _MIMO_BACKEND = "mimo_tts"
 _MIMO_VOICE_DESIGN_MODEL = "mimo-v2.5-tts-voicedesign"
 
@@ -158,6 +161,21 @@ def resolve_voice_cfg(speaker_id: Optional[str]) -> Optional[Dict[str, Any]]:
             return None
         return {
             "method": method,
+            "voice": voice,
+            "ref_wav": None,
+            "is_clone": False,
+        }
+
+    if mode == _MODE_QWEN3_TTS:
+        voice = (entry.get("voice") or "").strip()
+        if not voice:
+            rprint(
+                f"[yellow]🎤 speaker_router: speaker '{speaker_id}' is "
+                f"'qwen3_tts' but voice is empty; falling back to global voice.[/yellow]"
+            )
+            return None
+        return {
+            "method": _QWEN3_BACKEND,
             "voice": voice,
             "ref_wav": None,
             "is_clone": False,

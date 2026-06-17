@@ -36,22 +36,40 @@ _K_VOICE = _NS + "voice__"                # per-speaker fixed-voice input prefix
 _K_MIMO_VOICE_DESCRIPTION = _NS + "mimo_voice_description__"
 
 _MODE_FIXED = "fixed"
+_MODE_QWEN3_TTS = "qwen3_tts"
 _MODE_MIMO_VOICE_DESIGN = "mimo_voicedesign"
 _MODE_CLONE = "clone"
 _MODE_DEFAULT = "default"
 
 _MODE_LABELS: Dict[str, str] = {
     _MODE_FIXED: "🎙️ Fixed voice (specify a TTS voice name)",
+    _MODE_QWEN3_TTS: "🎙️ Qwen3 TTS voice",
     _MODE_MIMO_VOICE_DESIGN: "🎨 Xiaomi MiMo voice design (describe the voice)",
     _MODE_CLONE: "👥 Clone this speaker (use the preview clip as reference)",
     _MODE_DEFAULT: "🔇 Use default voice (no per-speaker switching)",
 }
 _MODE_ORDER: List[str] = [
     _MODE_FIXED,
+    _MODE_QWEN3_TTS,
     _MODE_MIMO_VOICE_DESIGN,
     _MODE_CLONE,
     _MODE_DEFAULT,
 ]
+
+_QWEN3_VOICES: Dict[str, str] = {
+    "Cherry": "Cherry - 芊悦｜阳光积极、亲切自然小姐姐（女）",
+    "Serena": "Serena - 苏瑶｜温柔小姐姐（女）",
+    "Ethan": "Ethan - 晨煦｜阳光、温暖、活力（男）",
+    "Chelsie": "Chelsie - 千雪｜二次元虚拟女友（女）",
+    "Momo": "Momo - 茉兔｜撒娇搞怪，逗你开心（女）",
+    "Vivian": "Vivian - 十三｜拽拽的、可爱的小暴躁（女）",
+    "Moon": "Moon - 月白｜率性帅气（男）",
+    "Maia": "Maia - 四月｜知性与温柔（女）",
+    "Kai": "Kai - 凯｜耳朵的一场 SPA（男）",
+    "Andre": "Andre - 安德雷｜磁性沉稳男声（男）",
+    "Rocky": "Rocky - 粤语-阿强｜幽默风趣（男）",
+    "Kiki": "Kiki - 粤语-阿清｜甜美港妹（女）",
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -167,6 +185,17 @@ def _render_speaker_rows(manifest: List[Dict]) -> tuple[Dict[str, Dict], bool]:
                     st.caption(
                         "⚠️ " + t("Voice name required for Fixed mode.")
                     )
+                entry_pick["voice"] = voice
+
+            elif mode == _MODE_QWEN3_TTS:
+                voice_key = _K_VOICE + speaker_id
+                voice_options = list(_QWEN3_VOICES.keys())
+                voice = st.selectbox(
+                    t("Qwen3 TTS Voice"),
+                    options=voice_options,
+                    format_func=lambda v: _QWEN3_VOICES.get(v, v),
+                    key=voice_key,
+                )
                 entry_pick["voice"] = voice
 
             elif mode == _MODE_MIMO_VOICE_DESIGN:
