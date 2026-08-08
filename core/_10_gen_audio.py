@@ -23,6 +23,7 @@ console = Console()
 TEMP_FILE_TEMPLATE = f"{_AUDIO_TMP_DIR}/{{}}_temp.wav"
 OUTPUT_FILE_TEMPLATE = f"{_AUDIO_SEGS_DIR}/{{}}.wav"
 WARMUP_SIZE = 5
+SAFE_TIMELINE_OVERRUN_SECONDS = 1.0
 from core.tts_backend.tts_vad import (
     MIN_SEGMENT_DURATION_MS,
     ensure_non_empty_wav as _ensure_non_empty_wav,
@@ -190,24 +191,49 @@ def fit_or_shorten_line(
     max_rewrites: int = 2,
 ) -> float:
     max_speed_factor = float(load_key("speed_factor.max"))
+    min_duration = MIN_SEGMENT_DURATION_MS / 1000
+    lines = parse_lines_value(tasks_df.at[row_index, 'lines'])
+    original_text = str(lines[line_index])
+    duration = get_audio_duration(output_file)
+    overrun = duration - target_duration
+
+    if target_duration <= min_duration:
+        if overrun <= SAFE_TIMELINE_OVERRUN_SECONDS:
+            rprint(
+                f"[yellow]Audio target is too short ({target_duration:.3f}s); keeping current audio "
+                f"and allowing {overrun:.3f}s overrun: {original_text}[/yellow]"
+            )
+            return duration
+        raise Exception(
+            f"Cannot fit audio segment {output_file}: target duration "
+            f"{target_duration:.3f}s is too short and overrun {overrun:.3f}s exceeds "
+            f"{SAFE_TIMELINE_OVERRUN_SECONDS:.3f}s"
+        )
+
     raw_target_duration = target_duration * max_speed_factor * 0.95
 
     for rewrite_attempt in range(max_rewrites + 1):
         try:
             return fit_audio_to_duration(output_file, target_duration, speed_factor)
         except AudioFitTooFastError:
+            duration = get_audio_duration(output_file)
+            overrun = duration - target_duration
+            if overrun <= SAFE_TIMELINE_OVERRUN_SECONDS:
+                rprint(
+                    f"[yellow]Audio exceeds target by {overrun:.3f}s; keeping current audio "
+                    f"and allowing timeline overrun: {original_text}[/yellow]"
+                )
+                return duration
+
             if rewrite_attempt >= max_rewrites:
                 raise
 
-            lines = parse_lines_value(tasks_df.at[row_index, 'lines'])
-            original_text = str(lines[line_index])
             shortened_text = shorten_text_for_audio_fit(original_text, raw_target_duration)
             if shortened_text == original_text:
                 if is_short_unshrinkable_text(original_text):
-                    duration = get_audio_duration(output_file)
                     rprint(
-                        f"[yellow]Short subtitle cannot be shortened safely; keeping max-speed audio "
-                        f"and allowing {duration - target_duration:.3f}s overrun: {original_text}[/yellow]"
+                        f"[yellow]Short subtitle cannot be shortened safely; keeping current audio "
+                        f"and allowing {overrun:.3f}s overrun: {original_text}[/yellow]"
                     )
                     return duration
                 raise
