@@ -53,6 +53,7 @@ def native_speed_enabled() -> bool:
 
 def render_line_at_native_speed(
     text: str,
+    temp_file: str,
     output_file: str,
     speed_factor: float,
     number,
@@ -81,6 +82,11 @@ def render_line_at_native_speed(
     if native_speed is None or abs(native_speed - base_speed) < 0.001:
         return False
 
+    # What plain ffmpeg would have produced from the take we already have.
+    target_duration = get_audio_duration(temp_file) / speed_factor
+    if target_duration <= 0:
+        return False
+
     # tts_main treats an existing file as a finished resume artefact and returns
     # without regenerating, so clear it before asking for a new rate.
     if os.path.exists(output_file):
@@ -89,17 +95,20 @@ def render_line_at_native_speed(
         tts_main(text, output_file, number, tasks_df, speaker_id=speaker_id, speed=native_speed)
     _ensure_non_empty_wav(output_file)
 
-    # The native rate hit its cap; ffmpeg covers what is left, which is a far
-    # smaller factor than it would have had to handle on its own.
-    residual = base_speed * speed_factor / native_speed
-    if abs(residual - 1.0) >= 0.001:
-        temp_file = f"{output_file}.residual.tmp.wav"
+    # Rate control tracks the ratio closely (measured 1.325x for speed 1.3), but
+    # each render varies by a few percent, and anything past the backend's cap
+    # is only partly covered by the rate anyway. So measure what came back
+    # rather than trusting the ratio, and let ffmpeg close the gap. Coming up
+    # short is fine -- the timeline is built from measured durations either way.
+    actual = get_audio_duration(output_file)
+    if actual > target_duration:
+        residual_file = f"{output_file}.residual.tmp.wav"
         try:
-            adjust_audio_speed(output_file, temp_file, residual)
-            os.replace(temp_file, output_file)
+            adjust_audio_speed(output_file, residual_file, actual / target_duration)
+            os.replace(residual_file, output_file)
         finally:
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
+            if os.path.exists(residual_file):
+                os.remove(residual_file)
     return True
 
 
@@ -544,7 +553,7 @@ def merge_chunks(tasks_df: pd.DataFrame) -> pd.DataFrame:
         if use_native_speed:
             try:
                 handled = render_line_at_native_speed(
-                    text, output_file, sf, number, tasks_df, speaker_id
+                    text, temp_file, output_file, sf, number, tasks_df, speaker_id
                 )
             except Exception as e:  # noqa: BLE001 - never let this break the pipeline
                 rprint(
