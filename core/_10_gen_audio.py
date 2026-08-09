@@ -3,7 +3,7 @@ import re
 import time
 import shutil
 import subprocess
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -28,6 +28,15 @@ from core.tts_backend.tts_vad import (
     MIN_SEGMENT_DURATION_MS,
     ensure_non_empty_wav as _ensure_non_empty_wav,
 )
+from core.tts_backend.soniox_tts import (
+    clamp_speed as _clamp_soniox_speed,
+    configured_speed as _soniox_configured_speed,
+)
+
+# Backend whose TTS can render a line at a chosen speaking rate. ffmpeg atempo
+# stretches an already-rendered wav and degrades as the factor grows, so when a
+# line does not fit we would rather re-render it faster than stretch it harder.
+NATIVE_SPEED_TTS_METHOD = 'soniox_tts'
 
 
 class AudioFitTooFastError(Exception):
@@ -158,7 +167,7 @@ def is_short_unshrinkable_text(text: str) -> bool:
     return len(compact) <= 6
 
 
-def regenerate_adjusted_line(tasks_df: pd.DataFrame, row_index: int, line_index: int, text: str, speed_factor: float) -> str:
+def regenerate_adjusted_line(tasks_df: pd.DataFrame, row_index: int, line_index: int, text: str, speed_factor: float, speed: Optional[float] = None) -> str:
     row = tasks_df.iloc[row_index]
     number = row['number']
     temp_file = TEMP_FILE_TEMPLATE.format(f"{number}_{line_index}")
@@ -167,7 +176,7 @@ def regenerate_adjusted_line(tasks_df: pd.DataFrame, row_index: int, line_index:
         if os.path.exists(path):
             os.remove(path)
 
-    tts_main(text, temp_file, number, tasks_df, speaker_id=get_row_speaker_id(row))
+    tts_main(text, temp_file, number, tasks_df, speaker_id=get_row_speaker_id(row), speed=speed)
     _ensure_non_empty_wav(temp_file)
     adjust_audio_speed(temp_file, output_file, speed_factor)
 
@@ -179,6 +188,57 @@ def regenerate_adjusted_line(tasks_df: pd.DataFrame, row_index: int, line_index:
             real_dur += get_audio_duration(line_temp_file)
     tasks_df.at[row_index, 'real_dur'] = real_dur
     return output_file
+
+
+def try_native_speed_refit(
+    tasks_df: pd.DataFrame,
+    row_index: int,
+    line_index: int,
+    output_file: str,
+    target_duration: float,
+    speed_factor: float,
+) -> Optional[str]:
+    """Re-render one line at a faster native TTS rate instead of stretching it.
+
+    Only worth doing when ffmpeg alone cannot reach the target within
+    speed_factor.max: the alternative there is an LLM rewrite that drops words,
+    whereas re-rendering keeps the line intact.
+
+    The native rate is deliberately NOT counted against speed_factor.max. That
+    budget exists to bound ffmpeg atempo, which resamples an already-rendered
+    wav and adds artefacts as it grows; asking the model to simply speak faster
+    produces natural speech with none of that. Folding the two together would
+    keep the end-to-end ratio constant and make this refit a no-op.
+
+    Returns the re-rendered output file, or None when the backend has no native
+    rate control or has no headroom left.
+    """
+    if load_key("tts_method") != NATIVE_SPEED_TTS_METHOD:
+        return None
+
+    duration = get_audio_duration(output_file)
+    if duration <= target_duration:
+        return None
+
+    base_speed = _soniox_configured_speed()
+    native_speed = _clamp_soniox_speed(base_speed * (duration / target_duration))
+    # Already at the backend's cap, or the configured baseline sits above it.
+    if native_speed is None or native_speed <= base_speed + 0.001:
+        return None
+
+    lines = parse_lines_value(tasks_df.at[row_index, 'lines'])
+    rprint(
+        f"[cyan]Re-rendering line at native TTS speed {native_speed:.2f} "
+        f"(baseline {base_speed:.2f}) to fit {target_duration:.2f}s[/cyan]"
+    )
+    return regenerate_adjusted_line(
+        tasks_df,
+        row_index,
+        line_index,
+        str(lines[line_index]),
+        speed_factor,
+        speed=native_speed,
+    )
 
 
 def fit_or_shorten_line(
@@ -211,6 +271,17 @@ def fit_or_shorten_line(
         )
 
     raw_target_duration = target_duration * max_speed_factor * 0.95
+
+    # Give native rate control first refusal, but only once ffmpeg alone is out
+    # of reach: it costs an extra TTS call, so lines that already fit must not
+    # pay for it. On success the line keeps every word that an LLM rewrite would
+    # otherwise have dropped.
+    if duration > target_duration and speed_factor * (duration / target_duration) > max_speed_factor:
+        refit_file = try_native_speed_refit(
+            tasks_df, row_index, line_index, output_file, target_duration, speed_factor
+        )
+        if refit_file is not None:
+            output_file = refit_file
 
     for rewrite_attempt in range(max_rewrites + 1):
         try:

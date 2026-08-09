@@ -7,6 +7,7 @@ from core.tts_backend.gpt_sovits_tts import gpt_sovits_tts_for_videolingo
 from core.tts_backend.sf_fishtts import siliconflow_fish_tts_for_videolingo
 from core.tts_backend.openai_tts import openai_tts
 from core.tts_backend.qwen3_tts import qwen3_tts
+from core.tts_backend.soniox_tts import soniox_tts
 from core.tts_backend.indextts2_tts import indextts2_tts_for_videolingo
 from core.tts_backend.fish_tts import fish_tts
 from core.tts_backend.azure_tts import azure_tts
@@ -43,7 +44,7 @@ def clean_text_for_tts(text):
         text = text.replace(char, '')
     return text.strip()
 
-def tts_main(text, save_as, number, task_df, speaker_id=None):
+def tts_main(text, save_as, number, task_df, speaker_id=None, speed=None):
     """Generate a single audio clip via the configured TTS backend.
 
     Multi-speaker routing (added in C4):
@@ -52,6 +53,10 @@ def tts_main(text, save_as, number, task_df, speaker_id=None):
         config (method / voice / ref_wav) overrides the global tts_method for
         this single call. When no override applies, behaviour is identical to
         the pre-C4 single-voice pipeline (backwards-compatible default).
+
+    `speed` overrides the backend's configured speaking rate for this call.
+        Only soniox_tts can honour it (native rate control); every other backend
+        ignores it and the timeline fitter falls back to ffmpeg atempo.
     """
     text = clean_text_for_tts(text)
     # Check if text is empty or single character, single character voiceovers are prone to bugs
@@ -144,6 +149,8 @@ def tts_main(text, save_as, number, task_df, speaker_id=None):
                 openai_tts(text, save_as, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'qwen3_tts':
                 qwen3_tts(text, save_as, voice_cfg=voice_cfg)
+            elif TTS_METHOD == 'soniox_tts':
+                soniox_tts(text, save_as, voice_cfg=voice_cfg, speed=speed)
             elif TTS_METHOD == 'gpt_sovits':
                 gpt_sovits_tts_for_videolingo(text, save_as, number, task_df, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'fish_tts':

@@ -114,7 +114,7 @@ reflect_translate: true
 pause_before_translate: false
 
 ## ======================== Dubbing Settings ======================== ##
-# TTS selection [sf_fish_tts, openai_tts, qwen3_tts, gpt_sovits, azure_tts, fish_tts, edge_tts, custom_tts]
+# TTS selection [sf_fish_tts, openai_tts, qwen3_tts, soniox_tts, gpt_sovits, azure_tts, fish_tts, edge_tts, custom_tts]
 tts_method: 'qwen3_tts'
 # Number of concurrent TTS audio generation requests. gpt_sovits is still forced to 1.
 tts_max_workers: 3
@@ -148,6 +148,22 @@ qwen3_tts:
   voice: 'Andre'
   # One of: Chinese, English, Japanese, Korean, German, French, Spanish, Italian, Portuguese, Russian
   language_type: 'Chinese'
+
+# Soniox Text-to-Speech (REST). Docs: https://soniox.com/docs/tts/rest-api/generate-speech
+soniox_tts:
+  # Leave empty to reuse whisper.soniox_api_key (same Soniox account).
+  api_key: ''
+  model: 'tts-rt-v1'
+  # Built-in voice name, or a cloned-voice UUID from the Soniox Console.
+  # Every voice speaks all 60+ languages and keeps one identity across them.
+  #   Female: Maya, Nina, Emma, Claire, Grace, Mina
+  #   Male:   Daniel, Noah, Jack, Adrian, Owen, Kenji
+  voice: 'Maya'
+  # BCP-47 code (zh / en / ja / ...). Leave empty to let Soniox detect from text.
+  language: 'zh'
+  # Baseline speaking rate, 0.7-1.3 (1.0 = normal). _10_gen_audio.py may raise it
+  # per line to hit a target duration natively instead of via ffmpeg atempo.
+  speed: 1.0
 
 # Azure configuration, 302.ai API only
 azure_tts:

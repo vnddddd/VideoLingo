@@ -428,6 +428,7 @@ def page_setting():
             "azure_tts",
             "openai_tts",
             "qwen3_tts",
+            "soniox_tts",
             "fish_tts",
             "sf_fish_tts",
             "edge_tts",
@@ -485,6 +486,66 @@ def page_setting():
         elif select_tts == "openai_tts":
             config_input("302ai API", "openai_tts.api_key")
             config_input(t("OpenAI Voice"), "openai_tts.voice")
+
+        elif select_tts == "soniox_tts":
+            config_input(
+                t("Soniox API Key"),
+                "soniox_tts.api_key",
+                help=t("Leave empty to reuse the Soniox key configured for ASR."),
+            )
+
+            # Every Soniox voice speaks all 60+ languages and keeps one identity
+            # across them, so this list is not language-specific.
+            soniox_voice_options = {
+                "Maya": "沉稳清晰、自然亲和（女）",
+                "Nina": "明亮活泼、富有个性（女）",
+                "Emma": "顺滑自然、轻松从容（女）",
+                "Claire": "干练清晰、精致亲切（女）",
+                "Grace": "轻柔舒缓、温暖抚慰（女）",
+                "Mina": "柔和沉静、真诚耐听（女）",
+                "Daniel": "浑厚沉稳、成熟可靠（男）",
+                "Noah": "年轻明快、友好现代（男）",
+                "Jack": "亲和自信、真诚上扬（男）",
+                "Adrian": "低沉专注、权威专业（男）",
+                "Owen": "沉着平实、内敛自信（男）",
+                "Kenji": "冷静精准、稳重可信（男）",
+            }
+            current_voice = load_key("soniox_tts.voice")
+            voice_names = list(soniox_voice_options.keys())
+            # A cloned-voice UUID is also valid here, so keep whatever is in the
+            # config selectable instead of silently snapping back to the first.
+            if current_voice and current_voice not in voice_names:
+                voice_names.append(current_voice)
+                soniox_voice_options[current_voice] = t("Cloned voice (from Soniox Console)")
+            soniox_voice = st.selectbox(
+                t("Soniox Voice"),
+                options=voice_names,
+                format_func=lambda x: f"{x} - {soniox_voice_options.get(x, x)}",
+                index=voice_names.index(current_voice) if current_voice in voice_names else 0,
+                help=t("Built-in voice, or paste a cloned-voice UUID into config.yaml."),
+            )
+            if soniox_voice != current_voice:
+                update_key("soniox_tts.voice", soniox_voice)
+                st.rerun()
+
+            config_input(
+                t("Language Code"),
+                "soniox_tts.language",
+                help=t("BCP-47 code such as zh / en / ja. Leave empty to auto-detect from the text."),
+            )
+
+            current_speed = float(load_key("soniox_tts.speed") or 1.0)
+            soniox_speed = st.slider(
+                t("Speaking Speed"),
+                min_value=0.7,
+                max_value=1.3,
+                value=min(1.3, max(0.7, current_speed)),
+                step=0.05,
+                help=t("Baseline speaking rate. Lines that overrun their subtitle slot are re-rendered faster automatically."),
+            )
+            if abs(soniox_speed - current_speed) > 1e-6:
+                update_key("soniox_tts.speed", round(float(soniox_speed), 2))
+                st.rerun()
 
         elif select_tts == "qwen3_tts":
             config_input(t("DashScope API Key"), "qwen3_tts.api_key")
