@@ -4,7 +4,7 @@ import io
 import threading
 import time
 import requests
-from pydub import AudioSegment
+from pydub import AudioSegment, silence
 from core.utils import load_key, except_handler, load_timeout, rprint
 
 # Soniox Text-to-Speech backend.
@@ -26,6 +26,9 @@ _DEFAULT_MODEL = "tts-rt-v1"
 CLONE_REF_MAX_SECONDS = 18.0
 CLONE_READY_TIMEOUT = 90
 CLONE_POLL_INTERVAL = 2.0
+# Silence inserted between phrases, matching how _long_ref_extractor builds the
+# shared reference so a rebuilt clip keeps the same rhythm.
+PHRASE_GAP_MS = 200
 
 # Every cloned voice this backend creates carries this prefix. Recycling only
 # ever touches these, so voices a user made by hand in the Soniox Console are
@@ -138,16 +141,61 @@ def delete_voice(voice_id, api_key=None) -> None:
         raise Exception(f"Soniox voice delete failed {resp.status_code}: {resp.text[:300]}")
 
 
+def _select_best_phrases(seg: AudioSegment, limit_ms: int) -> AudioSegment:
+    """Fill the reference budget with the longest phrases, never splitting one.
+
+    The shared _long_ref.wav is a set of phrases picked longest-first but
+    concatenated back in chronological order, and it routinely runs past 50s.
+    Simply keeping the first 18s therefore does two bad things: it cuts whatever
+    phrase straddles the boundary mid-word, and it keeps whichever fragments
+    happen to come first, which are often the shortest. Since the model copies
+    everything it hears, both cost clone quality.
+
+    Falls back to a plain trim when the reference is a single unbroken take.
+    """
+    try:
+        spans = silence.detect_nonsilent(
+            seg, min_silence_len=PHRASE_GAP_MS - 50, silence_thresh=seg.dBFS - 20
+        )
+    except Exception:
+        spans = []
+    if len(spans) < 2:
+        return seg[:limit_ms]
+
+    picked: list[tuple[int, int]] = []
+    used = 0
+    for start, end in sorted(spans, key=lambda s: s[1] - s[0], reverse=True):
+        # Charge each phrase for the gap that will precede it, so the joined
+        # result lands inside the budget instead of needing a final trim.
+        cost = (end - start) + (PHRASE_GAP_MS if picked else 0)
+        if used + cost > limit_ms:
+            continue
+        picked.append((start, end))
+        used += cost
+    if not picked:
+        return seg[:limit_ms]
+
+    picked.sort()  # chronological, matching how _long_ref.wav is assembled
+    out = AudioSegment.silent(duration=0)
+    for index, (start, end) in enumerate(picked):
+        if index:
+            out += AudioSegment.silent(duration=PHRASE_GAP_MS)
+        out += seg[start:end]
+    return out
+
+
 def _prepare_reference_clip(ref_wav: Path) -> bytes:
     """Trim a reference clip to what Soniox accepts and return wav bytes."""
     seg = AudioSegment.from_file(ref_wav)
     limit_ms = int(CLONE_REF_MAX_SECONDS * 1000)
     if len(seg) > limit_ms:
+        picked = _select_best_phrases(seg, limit_ms)
         rprint(
-            f"[yellow]Reference clip is {len(seg) / 1000:.1f}s; trimming to "
-            f"{CLONE_REF_MAX_SECONDS:.0f}s for Soniox voice cloning[/yellow]"
+            f"[yellow]Reference clip is {len(seg) / 1000:.1f}s; keeping "
+            f"{len(picked) / 1000:.1f}s of the longest phrases for Soniox voice "
+            f"cloning (cap {CLONE_REF_MAX_SECONDS:.0f}s)[/yellow]"
         )
-        seg = seg[:limit_ms]
+        seg = picked
     buf = io.BytesIO()
     seg.export(buf, format="wav")
     return buf.getvalue()
