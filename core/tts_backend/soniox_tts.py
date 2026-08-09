@@ -17,6 +17,7 @@ from core.utils import load_key, except_handler, load_timeout, rprint
 # too, so soniox_tts.api_key is optional and falls back to it.
 _API_URL = "https://tts-rt.soniox.com/tts"
 _VOICES_API_URL = "https://api.soniox.com/v1/voices"
+_MODELS_API_URL = "https://api.soniox.com/v1/tts-models"
 _DEFAULT_MODEL = "tts-rt-v1"
 
 # Voice cloning. Processing rejects reference clips over 20s with
@@ -86,6 +87,30 @@ def configured_speed() -> float:
 
 def _voice_headers(api_key: str) -> dict:
     return {"Authorization": f"Bearer {api_key}"}
+
+
+def list_models(api_key=None) -> list:
+    """Every TTS model with its voices, languages and capability flags.
+
+    Worth reading rather than hardcoding: the models differ in which built-in
+    voices they offer (tts-rt-v1 has 28, tts-rt-v2 has 71, and six v1 names are
+    missing from v2), so a voice picked for one model can be invalid on another.
+    """
+    api_key = api_key or _load_api_key()
+    resp = requests.get(_MODELS_API_URL, headers=_voice_headers(api_key),
+                        timeout=load_timeout("tts", 60))
+    if resp.status_code != 200:
+        raise Exception(f"Soniox model list failed {resp.status_code}: {resp.text[:300]}")
+    return resp.json().get("models") or []
+
+
+def list_model_voices(model=None, api_key=None) -> list:
+    """Built-in voices for one model, each as {id, description, gender}."""
+    model = model or (_load_opt("soniox_tts.model") or _DEFAULT_MODEL)
+    for entry in list_models(api_key):
+        if entry.get("id") == model:
+            return entry.get("voices") or []
+    return []
 
 
 def list_voices(api_key=None) -> list:

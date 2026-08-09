@@ -72,6 +72,43 @@ def config_input(label, key, help=None, placeholder=None):
     return val
 
 
+# Chinese blurbs for the voices most likely to be picked. Doubles as the
+# offline fallback list when the models endpoint cannot be reached; any voice
+# not listed here shows the English description the API returns.
+SONIOX_VOICE_ZH = {
+    "Maya": "沉稳清晰、自然亲和（女）",
+    "Nina": "明亮活泼、富有个性（女）",
+    "Emma": "顺滑自然、轻松从容（女）",
+    "Claire": "干练清晰、精致亲切（女）",
+    "Grace": "轻柔舒缓、温暖抚慰（女）",
+    "Mina": "柔和沉静、真诚耐听（女）",
+    "Daniel": "浑厚沉稳、成熟可靠（男）",
+    "Noah": "年轻明快、友好现代（男）",
+    "Jack": "亲和自信、真诚上扬（男）",
+    "Adrian": "低沉专注、权威专业（男）",
+    "Owen": "沉着平实、内敛自信（男）",
+    "Kenji": "冷静精准、稳重可信（男）",
+}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _soniox_model_voices(model):
+    """Built-in voices for a Soniox model, read from the API.
+
+    Cached because Streamlit re-runs the sidebar on every widget interaction.
+    Returns None when the API cannot be reached (no key configured yet, or
+    offline) so the caller can fall back to a static list.
+    """
+    try:
+        from core.tts_backend.soniox_tts import list_model_voices
+        return [
+            (v["id"], v.get("description") or "", v.get("gender") or "")
+            for v in list_model_voices(model)
+        ]
+    except Exception:
+        return None
+
+
 def _positive_int_config(key, fallback_key=None, default=1):
     """Read a positive integer config value with optional backward-compatible fallback."""
     try:
@@ -494,6 +531,23 @@ def page_setting():
                 help=t("Leave empty to reuse the Soniox key configured for ASR."),
             )
 
+            soniox_models = ["tts-rt-v1", "tts-rt-v2"]
+            try:
+                current_soniox_model = load_key("soniox_tts.model")
+            except Exception:
+                current_soniox_model = "tts-rt-v1"
+            soniox_model = st.selectbox(
+                t("Soniox Model"),
+                options=soniox_models,
+                index=soniox_models.index(current_soniox_model)
+                if current_soniox_model in soniox_models
+                else 0,
+                help=t("v1 is the officially released model. v2 offers many more voices but is not yet announced in Soniox's docs."),
+            )
+            if soniox_model != current_soniox_model:
+                update_key("soniox_tts.model", soniox_model)
+                st.rerun()
+
             soniox_mode_options = {
                 "preset": t("Preset"),
                 "clone": t("Clone original speaker"),
@@ -516,29 +570,37 @@ def page_setting():
                 st.rerun()
 
             if soniox_mode == "preset":
-                # Every Soniox voice speaks all 60+ languages and keeps one identity
-                # across them, so this list is not language-specific.
-                soniox_voice_options = {
-                    "Maya": "沉稳清晰、自然亲和（女）",
-                    "Nina": "明亮活泼、富有个性（女）",
-                    "Emma": "顺滑自然、轻松从容（女）",
-                    "Claire": "干练清晰、精致亲切（女）",
-                    "Grace": "轻柔舒缓、温暖抚慰（女）",
-                    "Mina": "柔和沉静、真诚耐听（女）",
-                    "Daniel": "浑厚沉稳、成熟可靠（男）",
-                    "Noah": "年轻明快、友好现代（男）",
-                    "Jack": "亲和自信、真诚上扬（男）",
-                    "Adrian": "低沉专注、权威专业（男）",
-                    "Owen": "沉着平实、内敛自信（男）",
-                    "Kenji": "冷静精准、稳重可信（男）",
-                }
+                # Pulled from the API rather than hardcoded: v1 offers 28 voices
+                # and v2 offers 71, and six v1 names (Maya, Noah, Jack, Claire,
+                # Sofia, Meera) are absent from v2 — a static list would leave a
+                # silently invalid voice selected after switching models.
+                api_voices = _soniox_model_voices(soniox_model)
+                if api_voices:
+                    soniox_voice_options = {
+                        vid: SONIOX_VOICE_ZH.get(vid)
+                        or (f"{desc[:56]}（{gender}）" if gender else desc[:56])
+                        for vid, desc, gender in api_voices
+                    }
+                else:
+                    soniox_voice_options = dict(SONIOX_VOICE_ZH)
+                    st.caption(t("Could not reach Soniox; showing a built-in voice list."))
+
                 current_voice = load_key("soniox_tts.voice")
                 voice_names = list(soniox_voice_options.keys())
-                # A cloned-voice UUID is also valid here, so keep whatever is in the
-                # config selectable instead of silently snapping back to the first.
                 if current_voice and current_voice not in voice_names:
-                    voice_names.append(current_voice)
-                    soniox_voice_options[current_voice] = t("Cloned voice (from Soniox Console)")
+                    # Either a cloned-voice UUID, or a built-in the selected
+                    # model does not offer (e.g. Maya after switching to v2).
+                    voice_names.insert(0, current_voice)
+                    soniox_voice_options[current_voice] = t("cloned voice, or not offered by this model")
+                    # Soniox resolves a UUID as a cloned voice, so only warn when
+                    # the value looks like a built-in name the model lacks.
+                    looks_like_uuid = len(current_voice) == 36 and current_voice.count("-") == 4
+                    if api_voices and not looks_like_uuid:
+                        st.warning(
+                            t("Voice '{v}' is not available on {m}. Pick another one.").format(
+                                v=current_voice, m=soniox_model
+                            )
+                        )
                 soniox_voice = st.selectbox(
                     t("Soniox Voice"),
                     options=voice_names,
