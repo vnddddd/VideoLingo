@@ -33,7 +33,7 @@ const INTEGER_KEYS = new Set([
   "tts_max_workers",
   "gpt_sovits.refer_mode"
 ]);
-const FLOAT_KEYS = new Set(["indextts2.emo_weight"]);
+const FLOAT_KEYS = new Set(["indextts2.emo_weight", "soniox_tts.speed"]);
 const LIST_TEXT_KEYS = new Set(["indextts2.base_url"]);
 
 const OPTIONS = {
@@ -70,6 +70,7 @@ const OPTIONS = {
     ["azure_tts", "azure_tts"],
     ["openai_tts", "openai_tts"],
     ["qwen3_tts", "qwen3_tts"],
+    ["soniox_tts", "soniox_tts"],
     ["fish_tts", "fish_tts"],
     ["sf_fish_tts", "sf_fish_tts"],
     ["edge_tts", "edge_tts"],
@@ -79,6 +80,28 @@ const OPTIONS = {
     ["f5tts", "f5tts"],
     ["mimo_tts", "mimo_tts"],
     ["indextts2", "indextts2"]
+  ],
+  "soniox_tts.model": [
+    ["tts-rt-v1", "tts-rt-v1（官方正式版，28 音色）"],
+    ["tts-rt-v2", "tts-rt-v2（71 音色，官方文档尚未公布）"]
+  ],
+  "soniox_tts.mode": [
+    ["preset", "preset - 使用下方预置音色"],
+    ["clone", "clone - 克隆原视频说话人"]
+  ],
+  "soniox_tts.voice": [
+    ["Maya", "Maya - 沉稳清晰、自然亲和（女）※仅 v1"],
+    ["Claire", "Claire - 干练清晰、精致亲切（女）※仅 v1"],
+    ["Noah", "Noah - 年轻明快、友好现代（男）※仅 v1"],
+    ["Jack", "Jack - 亲和自信、真诚上扬（男）※仅 v1"],
+    ["Nina", "Nina - 明亮活泼、富有个性（女）"],
+    ["Emma", "Emma - 顺滑自然、轻松从容（女）"],
+    ["Grace", "Grace - 轻柔舒缓、温暖抚慰（女）"],
+    ["Mina", "Mina - 柔和沉静、真诚耐听（女）"],
+    ["Daniel", "Daniel - 浑厚沉稳、成熟可靠（男）"],
+    ["Adrian", "Adrian - 低沉专注、权威专业（男）"],
+    ["Owen", "Owen - 沉着平实、内敛自信（男）"],
+    ["Kenji", "Kenji - 冷静精准、稳重可信（男）"]
   ],
   "qwen3_tts.model": [
     ["qwen3-tts-flash", "qwen3-tts-flash"],
