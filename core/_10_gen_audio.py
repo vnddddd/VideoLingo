@@ -3,6 +3,7 @@ import re
 import time
 import shutil
 import subprocess
+import threading
 from typing import Optional, Tuple
 
 import numpy as np
@@ -37,6 +38,69 @@ from core.tts_backend.soniox_tts import (
 # stretches an already-rendered wav and degrades as the factor grows, so when a
 # line does not fit we would rather re-render it faster than stretch it harder.
 NATIVE_SPEED_TTS_METHOD = 'soniox_tts'
+
+# Soniox allows only 3 concurrent REST requests, while the chunk-adjust stage
+# runs with ffmpeg_max_workers (12 by default). Gate the TTS calls alone so
+# ffmpeg keeps its parallelism and we never trip the provider's limit.
+NATIVE_SPEED_MAX_CONCURRENCY = 3
+_native_speed_semaphore = threading.Semaphore(NATIVE_SPEED_MAX_CONCURRENCY)
+
+
+def native_speed_enabled() -> bool:
+    """True when the configured backend can render at a chosen speaking rate."""
+    return load_key("tts_method") == NATIVE_SPEED_TTS_METHOD
+
+
+def render_line_at_native_speed(
+    text: str,
+    output_file: str,
+    speed_factor: float,
+    number,
+    tasks_df: pd.DataFrame,
+    speaker_id,
+) -> bool:
+    """Re-render a line at the target speaking rate instead of atempo-stretching it.
+
+    ffmpeg atempo resamples already-rendered audio and its artefacts grow with
+    the factor; asking the model to speak at that rate instead yields natural
+    speech. When the rate needed is beyond what the backend accepts, the backend
+    takes what it can and ffmpeg covers the small remainder.
+
+    Costs one extra TTS call per adjusted line, so callers should only reach for
+    it when the backend actually supports it.
+
+    Returns False when there is nothing the backend can do, leaving the caller
+    to fall back to ffmpeg.
+    """
+    if abs(speed_factor - 1.0) < 0.001:
+        return False
+
+    base_speed = _soniox_configured_speed()
+    native_speed = _clamp_soniox_speed(base_speed * speed_factor)
+    # Clamped straight back to the baseline: nothing gained by re-rendering.
+    if native_speed is None or abs(native_speed - base_speed) < 0.001:
+        return False
+
+    # tts_main treats an existing file as a finished resume artefact and returns
+    # without regenerating, so clear it before asking for a new rate.
+    if os.path.exists(output_file):
+        os.remove(output_file)
+    with _native_speed_semaphore:
+        tts_main(text, output_file, number, tasks_df, speaker_id=speaker_id, speed=native_speed)
+    _ensure_non_empty_wav(output_file)
+
+    # The native rate hit its cap; ffmpeg covers what is left, which is a far
+    # smaller factor than it would have had to handle on its own.
+    residual = base_speed * speed_factor / native_speed
+    if abs(residual - 1.0) >= 0.001:
+        temp_file = f"{output_file}.residual.tmp.wav"
+        try:
+            adjust_audio_speed(output_file, temp_file, residual)
+            os.replace(temp_file, output_file)
+        finally:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+    return True
 
 
 class AudioFitTooFastError(Exception):
@@ -451,13 +515,16 @@ def merge_chunks(tasks_df: pd.DataFrame) -> pd.DataFrame:
         for _, r in chunk_df.iterrows():
             number = r['number']
             lines = parse_lines_value(r['lines'])
-            for line_index, _line in enumerate(lines):
+            speaker_id = get_row_speaker_id(r)
+            for line_index, line in enumerate(lines):
                 jobs.append((
                     number,
                     line_index,
                     TEMP_FILE_TEMPLATE.format(f"{number}_{line_index}"),
                     OUTPUT_FILE_TEMPLATE.format(f"{number}_{line_index}"),
                     speed_factor,
+                    str(line),
+                    speaker_id,
                 ))
         chunk_start = index + 1
 
@@ -468,15 +535,31 @@ def merge_chunks(tasks_df: pd.DataFrame) -> pd.DataFrame:
         "ffmpeg_max_workers", fallback_key="max_workers", default=4
     )
     durations: dict = {}
+    # Resolved once: every job asks the same question and load_key re-reads config.
+    use_native_speed = native_speed_enabled()
 
     def _do_one(job):
-        number, line_index, temp_file, output_file, sf = job
-        adjust_audio_speed(temp_file, output_file, sf)
+        number, line_index, temp_file, output_file, sf, text, speaker_id = job
+        handled = False
+        if use_native_speed:
+            try:
+                handled = render_line_at_native_speed(
+                    text, output_file, sf, number, tasks_df, speaker_id
+                )
+            except Exception as e:  # noqa: BLE001 - never let this break the pipeline
+                rprint(
+                    f"[yellow]Native-speed render failed for {number}_{line_index} "
+                    f"({type(e).__name__}: {str(e)[:120]}); falling back to ffmpeg[/yellow]"
+                )
+                handled = False
+        if not handled:
+            adjust_audio_speed(temp_file, output_file, sf)
         ad_dur = get_audio_duration(output_file)
         return (number, line_index), ad_dur
 
     if jobs:
-        rprint(f"[blue]Adjusting {len(jobs)} audio segment(s) with {max_workers} parallel worker(s)...[/blue]")
+        how = "native TTS speed" if use_native_speed else "ffmpeg atempo"
+        rprint(f"[blue]Adjusting {len(jobs)} audio segment(s) via {how} with {max_workers} parallel worker(s)...[/blue]")
         with Progress() as progress:
             task = progress.add_task("[cyan]Adjusting audio speed...", total=len(jobs))
             with ThreadPoolExecutor(max_workers=max_workers) as executor:

@@ -1,8 +1,11 @@
 from pathlib import Path
+import hashlib
 import io
+import threading
+import time
 import requests
 from pydub import AudioSegment
-from core.utils import load_key, except_handler, load_timeout
+from core.utils import load_key, except_handler, load_timeout, rprint
 
 # Soniox Text-to-Speech backend.
 # Docs: https://soniox.com/docs/tts/rest-api/generate-speech
@@ -13,7 +16,21 @@ from core.utils import load_key, except_handler, load_timeout
 # The Soniox key already configured for ASR (whisper.soniox_api_key) works here
 # too, so soniox_tts.api_key is optional and falls back to it.
 _API_URL = "https://tts-rt.soniox.com/tts"
+_VOICES_API_URL = "https://api.soniox.com/v1/voices"
 _DEFAULT_MODEL = "tts-rt-v1"
+
+# Voice cloning. Processing rejects reference clips over 20s with
+# voice_audio_too_long, and the project's shared _long_ref.wav targets 22s, so
+# trimming is the normal path rather than an edge case.
+CLONE_REF_MAX_SECONDS = 18.0
+CLONE_READY_TIMEOUT = 90
+CLONE_POLL_INTERVAL = 2.0
+
+# Cloned voices are created once and reused on later runs, keyed by the content
+# hash of the reference clip. The lock stops concurrent TTS workers racing to
+# create the same voice — names are unique per project, so the loser would 400.
+_clone_cache = {}
+_clone_lock = threading.Lock()
 
 # Native speaking-rate control. Soniox rejects anything outside this range with
 # an `invalid_request` error, so clamp rather than let the request fail.
@@ -67,6 +84,151 @@ def configured_speed() -> float:
     return clamp_speed(_load_opt("soniox_tts.speed", 1.0)) or 1.0
 
 
+def _voice_headers(api_key: str) -> dict:
+    return {"Authorization": f"Bearer {api_key}"}
+
+
+def list_voices(api_key=None) -> list:
+    """Every custom voice in the project."""
+    api_key = api_key or _load_api_key()
+    resp = requests.get(_VOICES_API_URL, headers=_voice_headers(api_key),
+                        timeout=load_timeout("tts", 60))
+    if resp.status_code != 200:
+        raise Exception(f"Soniox voice list failed {resp.status_code}: {resp.text[:300]}")
+    return resp.json().get("voices") or []
+
+
+def delete_voice(voice_id, api_key=None) -> None:
+    """Free one of the 20 voice slots an organisation gets."""
+    api_key = api_key or _load_api_key()
+    resp = requests.delete(f"{_VOICES_API_URL}/{voice_id}",
+                           headers=_voice_headers(api_key),
+                           timeout=load_timeout("tts", 60))
+    if resp.status_code not in (200, 204):
+        raise Exception(f"Soniox voice delete failed {resp.status_code}: {resp.text[:300]}")
+
+
+def _prepare_reference_clip(ref_wav: Path) -> bytes:
+    """Trim a reference clip to what Soniox accepts and return wav bytes."""
+    seg = AudioSegment.from_file(ref_wav)
+    limit_ms = int(CLONE_REF_MAX_SECONDS * 1000)
+    if len(seg) > limit_ms:
+        rprint(
+            f"[yellow]Reference clip is {len(seg) / 1000:.1f}s; trimming to "
+            f"{CLONE_REF_MAX_SECONDS:.0f}s for Soniox voice cloning[/yellow]"
+        )
+        seg = seg[:limit_ms]
+    buf = io.BytesIO()
+    seg.export(buf, format="wav")
+    return buf.getvalue()
+
+
+def _create_voice(name: str, clip: bytes, api_key: str) -> str:
+    resp = requests.post(
+        _VOICES_API_URL,
+        headers=_voice_headers(api_key),
+        data={"name": name},
+        files={"file": (f"{name}.wav", clip, "audio/wav")},
+        timeout=load_timeout("tts", 120),
+    )
+    if resp.status_code not in (200, 201):
+        raise Exception(f"Soniox voice create failed {resp.status_code}: {resp.text[:400]}")
+    return resp.json()["id"]
+
+
+def _wait_until_ready(voice_id: str, model: str, api_key: str) -> None:
+    """Uploading only queues the clip; processing is async but usually seconds."""
+    deadline = time.time() + CLONE_READY_TIMEOUT
+    while True:
+        for voice in list_voices(api_key):
+            if voice.get("id") != voice_id:
+                continue
+            for entry in voice.get("models") or []:
+                if entry.get("model") != model:
+                    continue
+                status = entry.get("status")
+                if status == "ready":
+                    return
+                # A failed voice is terminal; recompute cannot recover it.
+                if status == "failed":
+                    raise Exception(
+                        f"Soniox voice {voice_id} failed to process for {model}: "
+                        f"{entry.get('error_message')}"
+                    )
+            break
+        if time.time() >= deadline:
+            raise Exception(
+                f"Soniox voice {voice_id} still not ready for {model} after "
+                f"{CLONE_READY_TIMEOUT}s"
+            )
+        time.sleep(CLONE_POLL_INTERVAL)
+
+
+def ensure_cloned_voice(ref_wav, model=None) -> str:
+    """Return the voice ID for a reference clip, creating it on first use.
+
+    Voices are named after the clip's content hash, so a repeat run — or another
+    speaker sharing the same reference — reuses the existing voice rather than
+    burning one of the 20 slots an organisation gets.
+
+    Clone quality tracks the reference closely: the model copies speaking speed,
+    accent, breathing and any background noise, so a clean single-speaker clip
+    matters more than a long one.
+    """
+    ref_path = Path(ref_wav)
+    if not ref_path.exists():
+        raise ValueError(f"Soniox voice clone: reference audio not found: {ref_path}")
+    model = model or (_load_opt("soniox_tts.model") or _DEFAULT_MODEL)
+
+    # Cheap in-process key. This runs once per generated line, so hashing the
+    # clip every time would mean decoding the reference a few hundred times per
+    # video just to look up an ID we already have.
+    stat = ref_path.stat()
+    cache_key = (str(ref_path.resolve()), stat.st_mtime_ns, stat.st_size, model)
+
+    with _clone_lock:
+        cached = _clone_cache.get(cache_key)
+        if cached:
+            return cached
+
+        clip = _prepare_reference_clip(ref_path)
+        # The content hash names the voice, so a repeat run — or another speaker
+        # sharing the reference — reuses it rather than burning a slot.
+        name = f"vl_{hashlib.md5(clip).hexdigest()[:12]}"
+
+        api_key = _load_api_key()
+        for voice in list_voices(api_key):
+            if voice.get("name") == name:
+                _wait_until_ready(voice["id"], model, api_key)
+                _clone_cache[cache_key] = voice["id"]
+                rprint(f"[cyan]Reusing Soniox cloned voice '{name}'[/cyan]")
+                return voice["id"]
+
+        rprint(f"[cyan]Creating Soniox cloned voice '{name}' from {ref_path.name}[/cyan]")
+        voice_id = _create_voice(name, clip, api_key)
+        _wait_until_ready(voice_id, model, api_key)
+        _clone_cache[cache_key] = voice_id
+        return voice_id
+
+
+def _resolve_voice(voice_cfg):
+    """Pick the voice for one call: router override, cloned voice, or config."""
+    # The multi-speaker router wins, and its clone mode carries its own reference.
+    if voice_cfg:
+        if voice_cfg.get("is_clone") and voice_cfg.get("ref_wav"):
+            return ensure_cloned_voice(voice_cfg["ref_wav"])
+        if voice_cfg.get("voice"):
+            return voice_cfg["voice"]
+
+    if str(_load_opt("soniox_tts.mode", "preset")).strip().lower() == "clone":
+        # Single-voice clone mode reuses the merged reference the pipeline already
+        # builds for other cloning backends.
+        from core.utils._long_ref_extractor import ensure_long_ref
+        return ensure_cloned_voice(ensure_long_ref())
+
+    return load_key("soniox_tts.voice")
+
+
 @except_handler("Failed to generate audio using Soniox TTS", retry=3, delay=1)
 def soniox_tts(text, save_as, voice_cfg=None, speed=None):
     """Soniox Text-to-Speech (REST, single request/response).
@@ -74,17 +236,14 @@ def soniox_tts(text, save_as, voice_cfg=None, speed=None):
     voice_cfg: optional dict from the C4 speaker router. When provided and
     voice_cfg["voice"] is truthy, it overrides the global soniox_tts.voice for
     this call. A UUID selects a cloned voice; anything else is a built-in name.
+    A router entry in clone mode instead clones its own reference clip.
 
     speed: optional per-call override of soniox_tts.speed. The timeline fitter
-    in _10_gen_audio.py uses it to re-synthesise a line at a faster rate instead
-    of stretching the existing wav with ffmpeg atempo.
+    in _10_gen_audio.py uses it to render a line at the rate it needs instead of
+    stretching the result with ffmpeg atempo.
     """
     api_key = _load_api_key()
-
-    if voice_cfg and voice_cfg.get("voice"):
-        voice = voice_cfg["voice"]
-    else:
-        voice = load_key("soniox_tts.voice")
+    voice = _resolve_voice(voice_cfg)
 
     payload = {
         "model": _load_opt("soniox_tts.model") or _DEFAULT_MODEL,

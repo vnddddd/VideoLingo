@@ -153,7 +153,12 @@ qwen3_tts:
 soniox_tts:
   # Leave empty to reuse whisper.soniox_api_key (same Soniox account).
   api_key: ''
+  # tts-rt-v1 or tts-rt-v2; both accept cloned voices.
   model: 'tts-rt-v1'
+  # 'preset' uses the voice below. 'clone' clones the original speaker from
+  # output/audio/refers/_long_ref.wav (trimmed to 18s, Soniox rejects >20s) and
+  # reuses that voice on later runs. Max 20 cloned voices per organisation.
+  mode: 'preset'
   # Built-in voice name, or a cloned-voice UUID from the Soniox Console.
   # Every voice speaks all 60+ languages and keeps one identity across them.
   #   Female: Maya, Nina, Emma, Claire, Grace, Mina

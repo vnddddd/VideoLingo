@@ -494,39 +494,61 @@ def page_setting():
                 help=t("Leave empty to reuse the Soniox key configured for ASR."),
             )
 
-            # Every Soniox voice speaks all 60+ languages and keeps one identity
-            # across them, so this list is not language-specific.
-            soniox_voice_options = {
-                "Maya": "沉稳清晰、自然亲和（女）",
-                "Nina": "明亮活泼、富有个性（女）",
-                "Emma": "顺滑自然、轻松从容（女）",
-                "Claire": "干练清晰、精致亲切（女）",
-                "Grace": "轻柔舒缓、温暖抚慰（女）",
-                "Mina": "柔和沉静、真诚耐听（女）",
-                "Daniel": "浑厚沉稳、成熟可靠（男）",
-                "Noah": "年轻明快、友好现代（男）",
-                "Jack": "亲和自信、真诚上扬（男）",
-                "Adrian": "低沉专注、权威专业（男）",
-                "Owen": "沉着平实、内敛自信（男）",
-                "Kenji": "冷静精准、稳重可信（男）",
+            soniox_mode_options = {
+                "preset": t("Preset"),
+                "clone": t("Clone original speaker"),
             }
-            current_voice = load_key("soniox_tts.voice")
-            voice_names = list(soniox_voice_options.keys())
-            # A cloned-voice UUID is also valid here, so keep whatever is in the
-            # config selectable instead of silently snapping back to the first.
-            if current_voice and current_voice not in voice_names:
-                voice_names.append(current_voice)
-                soniox_voice_options[current_voice] = t("Cloned voice (from Soniox Console)")
-            soniox_voice = st.selectbox(
-                t("Soniox Voice"),
-                options=voice_names,
-                format_func=lambda x: f"{x} - {soniox_voice_options.get(x, x)}",
-                index=voice_names.index(current_voice) if current_voice in voice_names else 0,
-                help=t("Built-in voice, or paste a cloned-voice UUID into config.yaml."),
+            try:
+                current_soniox_mode = load_key("soniox_tts.mode")
+            except Exception:
+                current_soniox_mode = "preset"
+            soniox_mode = st.selectbox(
+                t("Mode Selection"),
+                options=list(soniox_mode_options.keys()),
+                format_func=lambda x: soniox_mode_options[x],
+                index=list(soniox_mode_options.keys()).index(current_soniox_mode)
+                if current_soniox_mode in soniox_mode_options
+                else 0,
+                help=t("Clone reuses the video's own reference audio; a cloned voice is created once and reused (max 20 per Soniox organisation)."),
             )
-            if soniox_voice != current_voice:
-                update_key("soniox_tts.voice", soniox_voice)
+            if soniox_mode != current_soniox_mode:
+                update_key("soniox_tts.mode", soniox_mode)
                 st.rerun()
+
+            if soniox_mode == "preset":
+                # Every Soniox voice speaks all 60+ languages and keeps one identity
+                # across them, so this list is not language-specific.
+                soniox_voice_options = {
+                    "Maya": "沉稳清晰、自然亲和（女）",
+                    "Nina": "明亮活泼、富有个性（女）",
+                    "Emma": "顺滑自然、轻松从容（女）",
+                    "Claire": "干练清晰、精致亲切（女）",
+                    "Grace": "轻柔舒缓、温暖抚慰（女）",
+                    "Mina": "柔和沉静、真诚耐听（女）",
+                    "Daniel": "浑厚沉稳、成熟可靠（男）",
+                    "Noah": "年轻明快、友好现代（男）",
+                    "Jack": "亲和自信、真诚上扬（男）",
+                    "Adrian": "低沉专注、权威专业（男）",
+                    "Owen": "沉着平实、内敛自信（男）",
+                    "Kenji": "冷静精准、稳重可信（男）",
+                }
+                current_voice = load_key("soniox_tts.voice")
+                voice_names = list(soniox_voice_options.keys())
+                # A cloned-voice UUID is also valid here, so keep whatever is in the
+                # config selectable instead of silently snapping back to the first.
+                if current_voice and current_voice not in voice_names:
+                    voice_names.append(current_voice)
+                    soniox_voice_options[current_voice] = t("Cloned voice (from Soniox Console)")
+                soniox_voice = st.selectbox(
+                    t("Soniox Voice"),
+                    options=voice_names,
+                    format_func=lambda x: f"{x} - {soniox_voice_options.get(x, x)}",
+                    index=voice_names.index(current_voice) if current_voice in voice_names else 0,
+                    help=t("Built-in voice, or paste a cloned-voice UUID into config.yaml."),
+                )
+                if soniox_voice != current_voice:
+                    update_key("soniox_tts.voice", soniox_voice)
+                    st.rerun()
 
             config_input(
                 t("Language Code"),
