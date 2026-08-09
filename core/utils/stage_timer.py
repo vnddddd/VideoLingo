@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import time
+import unicodedata
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -21,14 +22,39 @@ from pathlib import Path
 TIMINGS_FILE = Path("output/log/stage_timings.json")
 _SOURCE_AUDIO = Path("output/audio/raw.mp3")
 
-# Stage aliases collapsed into the headline figures. Splitting and translating
-# are one logical step from a user's point of view, so they are reported
-# together while still being stored separately.
-HEADLINE_GROUPS: list[tuple[str, tuple[str, ...]]] = [
-    ("Transcription (ASR)", ("asr",)),
-    ("Split + translation", ("split", "translate")),
-    ("TTS + merge", ("tts-merge",)),
+# Stage names in both languages, keyed by the command-line alias rather than by
+# the caller's label: the Streamlit UI passes an already-translated label while
+# the bridge passes the English one, so the alias is the only stable key.
+STAGE_NAMES: dict[str, tuple[str, str]] = {
+    "asr": ("语音识别转字幕", "Transcription (ASR)"),
+    "speaker-preview": ("说话人预览", "Speaker preview"),
+    "split": ("语义切分", "Sentence segmentation"),
+    "translate": ("摘要与翻译", "Summarize + translate"),
+    "subtitles": ("字幕切分对齐", "Subtitle splitting"),
+    "timeline": ("时间轴与字幕", "Timeline + subtitles"),
+    "audio-tasks": ("配音任务与分块", "Audio tasks + chunks"),
+    "reference-audio": ("参考音频提取", "Reference audio"),
+    "tts-merge": ("TTS 生成与合并", "TTS + merge"),
+}
+
+# The figures worth watching. Splitting and translating are one logical step
+# from a user's point of view, so they are reported together while still being
+# stored separately.
+HEADLINE_GROUPS: list[tuple[tuple[str, str], tuple[str, ...]]] = [
+    (("语音识别", "Transcription (ASR)"), ("asr",)),
+    (("切分 + 翻译", "Split + translation"), ("split", "translate")),
+    (("TTS 生成 + 合并", "TTS + merge"), ("tts-merge",)),
 ]
+
+
+def _width(text: str) -> int:
+    """Terminal columns the text occupies; CJK glyphs take two, not one."""
+    return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in text)
+
+
+def _pad(text: str, width: int) -> str:
+    """Left-align to a column count, which str.ljust cannot do for CJK."""
+    return text + " " * max(0, width - _width(text))
 
 
 def _now_iso() -> str:
@@ -113,7 +139,7 @@ def timed_stage(alias: str, label: str):
 
 
 def summary_lines() -> list[str]:
-    """Render the timing report; empty when no stage has been recorded yet."""
+    """Render the bilingual timing report; empty when nothing was recorded."""
     data = _load()
     stages: dict = data.get("stages") or {}
     if not stages:
@@ -122,43 +148,48 @@ def summary_lines() -> list[str]:
     total = sum(float(e.get("seconds", 0.0)) for e in stages.values())
     media_seconds = float((data.get("media") or {}).get("duration_seconds") or 0.0)
 
-    lines = ["", "[bold cyan]━━━ Pipeline timings ━━━[/bold cyan]"]
+    lines = ["", "[bold cyan]━━━ 配音耗时统计 / Pipeline timings ━━━[/bold cyan]"]
     if media_seconds > 0:
         lines.append(
-            f"  Source media    {format_duration(media_seconds):>9}  ({media_seconds:.1f}s)"
+            f"  {_pad('原视频时长', 14)}{_pad('Source media', 22)}"
+            f"{format_duration(media_seconds):>9}   ({media_seconds:.1f}s)"
         )
-    lines.append(f"  Dubbing total   {format_duration(total):>9}  ({total:.1f}s)")
+    lines.append(
+        f"  {_pad('配音总耗时', 14)}{_pad('Dubbing total', 22)}"
+        f"{format_duration(total):>9}   ({total:.1f}s)"
+    )
     if media_seconds > 0:
         lines.append(
-            f"  Realtime factor {total / media_seconds:>8.2f}x  (dubbing time / media length)"
+            f"  {_pad('实时倍率', 14)}{_pad('Realtime factor', 22)}"
+            f"{total / media_seconds:>8.2f}x   (耗时 / 视频时长)"
         )
 
     def _pct(seconds: float) -> str:
         return f"{seconds / total * 100:5.1f}%" if total > 0 else "    -"
 
     lines.append("")
-    lines.append("  [bold]Per stage[/bold]")
+    lines.append("  [bold]分阶段明细 / Per stage[/bold]")
     for alias, entry in stages.items():
         seconds = float(entry.get("seconds", 0.0))
         runs = int(entry.get("runs", 1))
-        suffix = f"  x{runs}" if runs > 1 else ""
-        label = str(entry.get("label") or alias)[:48]
+        zh, en = STAGE_NAMES.get(alias, ("", str(entry.get("label") or alias)))
+        suffix = f"   重跑 x{runs}" if runs > 1 else ""
         lines.append(
-            f"    {label:<50}{format_duration(seconds):>8}  {_pct(seconds)}{suffix}"
+            f"    {_pad(zh, 18)}{_pad(en, 30)}"
+            f"{format_duration(seconds):>8}  {_pct(seconds)}{suffix}"
         )
 
     lines.append("")
-    lines.append("  [bold]Headline[/bold]")
-    for title, aliases in HEADLINE_GROUPS:
+    lines.append("  [bold]关键指标 / Headline[/bold]")
+    for (zh, en), aliases in HEADLINE_GROUPS:
         seconds = sum(float((stages.get(a) or {}).get("seconds", 0.0)) for a in aliases)
         if seconds <= 0:
             continue
-        extra = ""
-        if media_seconds > 0:
-            extra = f"  {seconds / media_seconds:.2f}x"
+        extra = f"   {seconds / media_seconds:.2f}x" if media_seconds > 0 else ""
         lines.append(
-            f"    {title:<50}{format_duration(seconds):>8}  {_pct(seconds)}{extra}"
+            f"    {_pad(zh, 18)}{_pad(en, 30)}"
+            f"{format_duration(seconds):>8}  {_pct(seconds)}{extra}"
         )
 
-    lines.append(f"\n  Saved to {TIMINGS_FILE.as_posix()}")
+    lines.append(f"\n  明细已保存 / Saved to {TIMINGS_FILE.as_posix()}")
     return lines

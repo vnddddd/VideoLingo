@@ -353,7 +353,7 @@ def _run_timed(alias: str, label: str, func: Callable[[], object]) -> None:
     start = time.monotonic()
     with timed_stage(alias, label):
         func()
-    _rprint(f"[dim]   ↳ took {format_duration(time.monotonic() - start)}[/dim]")
+    _rprint(f"[dim]   ↳ 本阶段耗时 / took {format_duration(time.monotonic() - start)}[/dim]")
 
 
 def _print_timing_summary() -> None:
