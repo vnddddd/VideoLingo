@@ -27,6 +27,11 @@ CLONE_REF_MAX_SECONDS = 18.0
 CLONE_READY_TIMEOUT = 90
 CLONE_POLL_INTERVAL = 2.0
 
+# Every cloned voice this backend creates carries this prefix. Recycling only
+# ever touches these, so voices a user made by hand in the Soniox Console are
+# never deleted by us.
+VOICE_NAME_PREFIX = "vl_"
+
 # Cloned voices are created once and reused on later runs, keyed by the content
 # hash of the reference clip. The lock stops concurrent TTS workers racing to
 # create the same voice — names are unique per project, so the loser would 400.
@@ -161,6 +166,47 @@ def _create_voice(name: str, clip: bytes, api_key: str) -> str:
     return resp.json()["id"]
 
 
+def _recycle_oldest_voice(api_key: str) -> bool:
+    """Delete the oldest voice we created, to free a slot for a new one.
+
+    An organisation gets 20 cloned voices, and every distinct reference clip
+    takes one, so dubbing a 21st video would otherwise fail outright. Ours are
+    reproducible from their reference audio, which makes them safe to evict;
+    voices created by hand in the Console are left alone, and if none of ours
+    remain the caller gets the original quota error instead of a surprise.
+    """
+    ours = [
+        v for v in list_voices(api_key)
+        if str(v.get("name") or "").startswith(VOICE_NAME_PREFIX)
+    ]
+    if not ours:
+        return False
+    # created_at is an ISO-8601 timestamp, so lexical order is chronological.
+    victim = min(ours, key=lambda v: str(v.get("created_at") or ""))
+    rprint(
+        f"[yellow]Soniox voice quota reached; recycling the oldest one we made: "
+        f"'{victim.get('name')}' (created {victim.get('created_at')})[/yellow]"
+    )
+    delete_voice(victim["id"], api_key)
+    return True
+
+
+def _create_voice_with_recycle(name: str, clip: bytes, api_key: str) -> str:
+    """Create a voice, freeing a slot first if the quota is already full."""
+    try:
+        return _create_voice(name, clip, api_key)
+    except Exception as exc:  # noqa: BLE001 - only quota errors are retryable
+        if "limit_exceeded" not in str(exc):
+            raise
+        if not _recycle_oldest_voice(api_key):
+            raise Exception(
+                "Soniox voice quota is full and no VideoLingo-created voice can be "
+                "recycled. Delete unused voices in the Soniox Console, or request a "
+                f"higher limit. Original error: {exc}"
+            ) from exc
+        return _create_voice(name, clip, api_key)
+
+
 def _wait_until_ready(voice_id: str, model: str, api_key: str) -> None:
     """Uploading only queues the clip; processing is async but usually seconds."""
     deadline = time.time() + CLONE_READY_TIMEOUT
@@ -194,7 +240,9 @@ def ensure_cloned_voice(ref_wav, model=None) -> str:
 
     Voices are named after the clip's content hash, so a repeat run — or another
     speaker sharing the same reference — reuses the existing voice rather than
-    burning one of the 20 slots an organisation gets.
+    burning one of the 20 slots an organisation gets. When the quota does run
+    out, the oldest voice this backend created is recycled to make room; see
+    _recycle_oldest_voice.
 
     Clone quality tracks the reference closely: the model copies speaking speed,
     accent, breathing and any background noise, so a clean single-speaker clip
@@ -219,7 +267,7 @@ def ensure_cloned_voice(ref_wav, model=None) -> str:
         clip = _prepare_reference_clip(ref_path)
         # The content hash names the voice, so a repeat run — or another speaker
         # sharing the reference — reuses it rather than burning a slot.
-        name = f"vl_{hashlib.md5(clip).hexdigest()[:12]}"
+        name = f"{VOICE_NAME_PREFIX}{hashlib.md5(clip).hexdigest()[:12]}"
 
         api_key = _load_api_key()
         for voice in list_voices(api_key):
@@ -230,7 +278,7 @@ def ensure_cloned_voice(ref_wav, model=None) -> str:
                 return voice["id"]
 
         rprint(f"[cyan]Creating Soniox cloned voice '{name}' from {ref_path.name}[/cyan]")
-        voice_id = _create_voice(name, clip, api_key)
+        voice_id = _create_voice_with_recycle(name, clip, api_key)
         _wait_until_ready(voice_id, model, api_key)
         _clone_cache[cache_key] = voice_id
         return voice_id
