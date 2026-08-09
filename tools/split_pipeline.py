@@ -342,10 +342,32 @@ def _run_if_missing(label: str, outputs: Sequence[Path | str], func: Callable[[]
     _require_files(outputs, f"{label} output")
 
 
+def _run_timed(alias: str, label: str, func: Callable[[], object]) -> None:
+    """Run one stage, record how long it took, and echo the figure.
+
+    Timings are persisted rather than kept in memory because the Streamlit UI
+    runs every stage as its own subprocess; see core/utils/stage_timer.py.
+    """
+    from core.utils.stage_timer import format_duration, timed_stage
+
+    start = time.monotonic()
+    with timed_stage(alias, label):
+        func()
+    _rprint(f"[dim]   ↳ took {format_duration(time.monotonic() - start)}[/dim]")
+
+
+def _print_timing_summary() -> None:
+    from core.utils.stage_timer import summary_lines
+
+    for line in summary_lines():
+        _rprint(line)
+
+
 def _run_steps(steps: Sequence[tuple[str, Callable[[], object]]]) -> None:
+    alias_by_index = {index: alias for alias, index in LOCAL_STEP_ALIASES.items()}
     for index, (label, func) in enumerate(steps, 1):
         _rprint(f"\n[bold cyan]▶ Step {index}/{len(steps)}: {label}[/bold cyan]")
-        func()
+        _run_timed(alias_by_index.get(index - 1, f"step{index}"), label, func)
 
 
 def cmd_status(args: argparse.Namespace) -> None:
@@ -693,7 +715,11 @@ def cmd_local_step(args: argparse.Namespace) -> None:
     _require_local_inputs()
     label, func = _local_step_by_alias(args.step)
     _rprint(f"\n[bold cyan]▶ Local step: {label}[/bold cyan]")
-    func()
+    _run_timed(args.step, label, func)
+    # The Streamlit UI drives one stage per subprocess, so the run is only
+    # complete -- and the summary only meaningful -- after the last one.
+    if args.step == "tts-merge":
+        _print_timing_summary()
 
 
 def cmd_local_until_audio(args: argparse.Namespace) -> None:
@@ -703,6 +729,7 @@ def cmd_local_until_audio(args: argparse.Namespace) -> None:
     _require_files([DUB_AUDIO_FILE, DUB_SUB_FILE], "local-stop-before-video output")
     print("\n[OK] Local pipeline stopped before final video render.")
     _print_file_status([DUB_AUDIO_FILE, DUB_SUB_FILE], "local output")
+    _print_timing_summary()
 
 
 def _manifest_for_render() -> list[Path]:
