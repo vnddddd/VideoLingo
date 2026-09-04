@@ -1,7 +1,7 @@
 import streamlit as st
-import os, signal, sys, time, subprocess
+import os, sys, time
 from core.st_utils.imports_and_utils import *
-from core.st_utils.task_runner import StopTask, TaskRunner, get_current_runner
+from core.st_utils.task_runner import StopTask, TaskRunner
 from core.st_utils.speaker_picker import render_speaker_picker_if_pending
 from core import *
 from core import _3_speaker_preview as _speaker_preview
@@ -19,7 +19,6 @@ DUB_AUDIO = "output/dub.mp3"
 DUB_SUBTITLE = "output/dub.srt"
 TRANS_SUBTITLE = "output/trans.srt"
 RAW_AUDIO = "output/audio/raw.mp3"
-SPLIT_RENDER_ZIP = "output/render_inputs.zip"
 
 
 def _has_source_video() -> bool:
@@ -85,177 +84,6 @@ def _download_output_file(path: str, label: str, mime: str, key: str) -> bool:
     return True
 
 
-def _current_process_identity() -> str | None:
-    """Best-effort identity token for our own PID; mirrors tools/split_pipeline.py logic."""
-    pid = os.getpid()
-    if os.name == "nt":
-        try:
-            import ctypes
-            from ctypes import wintypes
-
-            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            kernel32 = ctypes.windll.kernel32
-            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-            kernel32.OpenProcess.restype = wintypes.HANDLE
-            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-            if not handle:
-                return None
-            try:
-                creation = wintypes.FILETIME()
-                exit_t = wintypes.FILETIME()
-                kernel_t = wintypes.FILETIME()
-                user_t = wintypes.FILETIME()
-                ok = kernel32.GetProcessTimes(
-                    handle,
-                    ctypes.byref(creation),
-                    ctypes.byref(exit_t),
-                    ctypes.byref(kernel_t),
-                    ctypes.byref(user_t),
-                )
-                if not ok:
-                    return None
-                return f"{creation.dwHighDateTime:08x}{creation.dwLowDateTime:08x}"
-            finally:
-                kernel32.CloseHandle(handle)
-        except Exception:
-            return None
-
-    try:
-        stat_text = open(f"/proc/{pid}/stat", "r", encoding="utf-8", errors="replace").read()
-    except FileNotFoundError:
-        return None
-    except Exception:
-        return "unknown"
-    fields = stat_text.rsplit(")", 1)[-1].strip().split()
-    if len(fields) >= 20:
-        return fields[19]
-    return "unknown"
-
-
-def _terminate_process_tree(process: subprocess.Popen, *, grace_seconds: float = 5.0) -> None:
-    """Terminate only the child process/group created for the current split command."""
-    if process.poll() is not None:
-        return
-
-    try:
-        if os.name == "nt":
-            process.terminate()
-        else:
-            os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    except Exception:
-        process.terminate()
-
-    deadline = time.monotonic() + grace_seconds
-    while process.poll() is None and time.monotonic() < deadline:
-        time.sleep(0.1)
-
-    if process.poll() is None:
-        try:
-            if os.name == "nt":
-                subprocess.run(
-                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-            else:
-                os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        except Exception:
-            process.kill()
-
-
-def _run_split_pipeline_command(*args: str) -> str:
-    """Run tools/split_pipeline.py from the project root and let logs stream to the server terminal."""
-    # Multi-speaker picker gate: if a speaker preview is pending user input,
-    # halt the runner before launching ANY split_pipeline subprocess so the
-    # UI can render the picker. The runner enters "stopped" state cleanly;
-    # the user picks voices in the UI which clears the pending flag, then
-    # they can press the start button again to resume.
-    if _speaker_preview.is_pending():
-        raise StopTask(
-            "Speaker preview pending: pick voices in the UI before continuing."
-        )
-    command = [sys.executable, "tools/split_pipeline.py", *args]
-    print("$ " + " ".join(command), flush=True)
-
-    env = os.environ.copy()
-    env.setdefault("PYTHONUTF8", "1")
-    env.setdefault("PYTHONIOENCODING", "utf-8:replace")
-    env.setdefault("PYTHONUNBUFFERED", "1")
-    env["VIDEOLINGO_PARENT_PID"] = str(os.getpid())
-    parent_identity = _current_process_identity()
-    if parent_identity:
-        env["VIDEOLINGO_PARENT_IDENTITY"] = parent_identity
-
-    popen_kwargs = {
-        "cwd": current_dir,
-        "env": env,
-    }
-    if os.name == "nt":
-        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    else:
-        popen_kwargs["start_new_session"] = True
-
-    process = subprocess.Popen(command, **popen_kwargs)
-    runner = get_current_runner()
-    unregister_stop_callback = None
-    if runner is not None:
-        unregister_stop_callback = runner.register_stop_callback(lambda: _terminate_process_tree(process))
-
-    try:
-        while True:
-            if runner is not None and runner.stop_requested:
-                _terminate_process_tree(process)
-                raise StopTask("split_pipeline stopped by user")
-            returncode = process.poll()
-            if returncode is not None:
-                break
-            time.sleep(0.2)
-    finally:
-        if unregister_stop_callback is not None:
-            unregister_stop_callback()
-
-    if runner is not None and runner.stop_requested:
-        raise StopTask("split_pipeline stopped by user")
-    if returncode != 0:
-        raise RuntimeError(f"split_pipeline failed with exit code {returncode}")
-    return ""
-
-
-def _run_split_pipeline_status_command() -> str:
-    """Run split pipeline status and return captured output for the UI."""
-    command = [sys.executable, "tools/split_pipeline.py", "status"]
-    print("$ " + " ".join(command), flush=True)
-
-    env = os.environ.copy()
-    env.setdefault("PYTHONUTF8", "1")
-    env.setdefault("PYTHONIOENCODING", "utf-8:replace")
-    env.setdefault("PYTHONUNBUFFERED", "1")
-
-    result = subprocess.run(
-        command,
-        cwd=current_dir,
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        errors="replace",
-    )
-    output = (result.stdout or "").strip()
-    if result.returncode != 0:
-        raise RuntimeError(f"split_pipeline status failed with exit code {result.returncode}\n{output}")
-    return output
-
-
-def _split_step(label: str, *args: str):
-    """Build a TaskRunner step for a split pipeline CLI command."""
-    return (label, lambda: _run_split_pipeline_command(*args))
-
-
 # ─── Kickoff memo: remember last pipeline start so the speaker picker can auto-resume ───
 def _kickoff(runner_key: str, steps_provider):
     """Start a TaskRunner and remember how it was started.
@@ -316,21 +144,6 @@ def _speaker_preview_inproc_step():
         raise StopTask(
             "Speaker preview pending: pick voices in the UI before continuing."
         )
-
-
-def _split_local_resume_steps():
-    """Expose local-stop-before-video as guarded sub-steps for pause/resume UI."""
-    return [
-        _split_step(t("WhisperX word-level transcription"), "local-step", "asr"),
-        _split_step(t("Speaker preview for multi-speaker picker"), "local-step", "speaker-preview"),
-        _split_step(t("Sentence segmentation using NLP and LLM"), "local-step", "split"),
-        _split_step(t("Summarization and multi-step translation"), "local-step", "translate"),
-        _split_step(t("Cut and align long subtitles"), "local-step", "subtitles"),
-        _split_step(t("Generate timeline and subtitles"), "local-step", "timeline"),
-        _split_step(t("Generate audio tasks and chunks"), "local-step", "audio-tasks"),
-        _split_step(t("Extract reference audio"), "local-step", "reference-audio"),
-        _split_step(t("Generate audio and merge into dub.mp3/dub.srt"), "local-step", "tts-merge"),
-    ]
 
 
 # ─── Task control UI (auto-refreshes every 1s while task is active) ───
@@ -407,11 +220,11 @@ def _task_control_panel(runner_key: str):
             st.rerun(scope="app")
 
 
-# ─── Text processing ───
+# ─── Translation and dubbing ───
 
 
 def _get_text_steps():
-    """Return the subtitle processing steps as (label, callable) list."""
+    """Return subtitle translation steps as (label, callable) pairs."""
     steps = [
         (t("WhisperX word-level transcription"), _2_asr.transcribe),
         (t("Speaker preview for multi-speaker picker"), _speaker_preview_inproc_step),
@@ -444,57 +257,8 @@ def _get_text_steps():
     return steps
 
 
-def text_processing_section():
-    st.header(t("b. Translate and Generate Subtitles"))
-    runner = TaskRunner.get(st.session_state, "_text_runner")
-    steps = _get_text_steps()
-
-    with st.container(border=True):
-        st.markdown(
-            f"""
-        <p style='font-size: 20px;'>
-        {t("This stage includes the following steps:")}
-        <p style='font-size: 20px;'>
-            {_steps_markdown(steps)}
-        """,
-            unsafe_allow_html=True,
-        )
-
-        if not _subtitle_outputs_complete():
-            if runner.is_active:
-                _task_control_panel("_text_runner")
-            elif runner.is_done:
-                _task_control_panel("_text_runner")
-            else:
-                if st.button(
-                    t("Start Processing Subtitles"), key="text_processing_button"
-                ):
-                    _kickoff("_text_runner", _get_text_steps)
-        else:
-            should_render_video = _should_render_video()
-            if not should_render_video:
-                st.success(t("Subtitle processing is complete!"))
-                _download_output_file(
-                    TRANS_SUBTITLE,
-                    t("Download translated subtitle"),
-                    "application/x-subrip",
-                    "download_translated_subtitle",
-                )
-            elif load_key("burn_subtitles"):
-                st.video(SUB_VIDEO)
-            download_subtitle_zip_button(text=t("Download All Srt Files"))
-
-            if st.button(t("Archive to 'history'"), key="cleanup_in_text_processing"):
-                cleanup()
-                st.rerun()
-            return True
-
-
-# ─── Audio processing ───
-
-
 def _get_audio_steps():
-    """Return the audio/dubbing processing steps as (label, callable) list."""
+    """Return dubbing steps as (label, callable) pairs."""
     steps = [
         (
             t("Generate audio tasks and chunks"),
@@ -512,117 +276,112 @@ def _get_audio_steps():
     return steps
 
 
-def split_pipeline_section():
-    st.header(t("d. Split Local/Remote Pipeline"))
-    runner = TaskRunner.get(st.session_state, "_split_pipeline_runner")
+def _get_translation_dubbing_steps():
+    """Build one continuous workflow, skipping stages whose outputs already exist."""
+    steps = []
+    if not _subtitle_outputs_complete():
+        steps.extend(_get_text_steps())
+    if not _dubbing_outputs_complete():
+        steps.extend(_get_audio_steps())
+    return steps
+
+
+def _render_subtitle_outputs() -> bool:
+    """Render/download subtitle results when the subtitle stage is complete."""
+    if not _subtitle_outputs_complete():
+        return False
+
+    if _should_render_video():
+        if load_key("burn_subtitles") and os.path.exists(SUB_VIDEO):
+            st.video(SUB_VIDEO)
+    else:
+        st.success(t("Subtitle processing is complete!"))
+        _download_output_file(
+            TRANS_SUBTITLE,
+            t("Download translated subtitle"),
+            "application/x-subrip",
+            "download_translated_subtitle",
+        )
+    return True
+
+
+def _render_dubbing_outputs() -> bool:
+    """Render/download dubbing results when the audio stage is complete."""
+    if not _dubbing_outputs_complete():
+        return False
+
+    if _should_render_video():
+        st.success(
+            t(
+                "Audio processing is complete! You can check the audio files in the `output` folder."
+            )
+        )
+        if load_key("burn_subtitles") and os.path.exists(DUB_VIDEO):
+            st.video(DUB_VIDEO)
+    else:
+        st.success(t("Standalone subtitles and audio are ready in the output folder."))
+        st.audio(DUB_AUDIO)
+        audio_col, subtitle_col = st.columns(2)
+        with audio_col:
+            _download_output_file(
+                DUB_AUDIO,
+                t("Download dubbed audio"),
+                "audio/mpeg",
+                "download_dubbed_audio",
+            )
+        with subtitle_col:
+            _download_output_file(
+                DUB_SUBTITLE,
+                t("Download dubbed subtitle"),
+                "application/x-subrip",
+                "download_dubbed_subtitle",
+            )
+    return True
+
+
+def translation_dubbing_section():
+    """Show one button and one task runner for translation, subtitles, and dubbing."""
+    st.header(t("b. Translate, Generate Subtitles and Dub"))
+    runner = TaskRunner.get(st.session_state, "_translation_runner")
+    steps = _get_translation_dubbing_steps()
 
     with st.container(border=True):
-        st.markdown(
-            f"""
-        <p style='font-size: 20px;'>
-        {t("Use these advanced actions when audio separation/final rendering must run on another machine.")}
-        <p style='font-size: 20px;'>
-            1. {t("Remote/GPU machine: prepare raw, vocal and background audio")}<br>
-            2. {t("Local machine: run subtitles and dubbing, stopping before final video render")}<br>
-            3. {t("Create a render input zip for the remote/GPU machine")}<br>
-            4. {t("Remote/GPU machine: render the final dubbed video")}
-        """,
-            unsafe_allow_html=True,
-        )
-
-        status_col, zip_col = st.columns(2)
-        with status_col:
-            if st.button(t("Check Split Pipeline Status"), key="split_pipeline_status", use_container_width=True):
-                st.code(_run_split_pipeline_status_command() or t("No status output."))
-        with zip_col:
-            st.caption(t("Default render package path: output/render_inputs.zip"))
+        if steps:
+            st.markdown(
+                f"""
+            <p style='font-size: 20px;'>
+            {t("This stage includes the following steps:")}
+            <p style='font-size: 20px;'>
+                {_steps_markdown(steps)}
+            """,
+                unsafe_allow_html=True,
+            )
+        else:
+            st.success(t("Translation and dubbing are complete!"))
 
         if runner.is_active or runner.is_done:
-            _task_control_panel("_split_pipeline_runner")
-        else:
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button(t("1. Prepare Audio on Remote/GPU"), key="split_pipeline_prep_audio", use_container_width=True):
-                    _kickoff(
-                        "_split_pipeline_runner",
-                        lambda: [_split_step(t("Prepare split pipeline audio"), "prep-audio")],
-                    )
-                if st.button(t("3. Package Render Inputs"), key="split_pipeline_pack", use_container_width=True):
-                    _kickoff(
-                        "_split_pipeline_runner",
-                        lambda: [_split_step(t("Package render inputs"), "pack-render-inputs", "--zip", SPLIT_RENDER_ZIP)],
-                    )
-            with col2:
-                if st.button(t("2. Run Local Steps Until Audio"), key="split_pipeline_local_until_audio", use_container_width=True):
-                    _kickoff("_split_pipeline_runner", _split_local_resume_steps)
-                if st.button(t("4. Render Final Video on Remote/GPU"), key="split_pipeline_remote_render", use_container_width=True):
-                    _kickoff(
-                        "_split_pipeline_runner",
-                        lambda: [_split_step(t("Render final dubbed video"), "remote-render")],
-                    )
+            _task_control_panel("_translation_runner")
+        elif steps:
+            if st.button(
+                t("Start Translation and Dubbing"),
+                key="translation_dubbing_button",
+            ):
+                _kickoff("_translation_runner", _get_translation_dubbing_steps)
 
+        subtitle_ready = _render_subtitle_outputs()
+        audio_ready = _render_dubbing_outputs()
 
-def audio_processing_section():
-    st.header(t("c. Dubbing"))
-    runner = TaskRunner.get(st.session_state, "_audio_runner")
-    steps = _get_audio_steps()
+        if subtitle_ready or audio_ready:
+            download_subtitle_zip_button(text=t("Download All Srt Files"))
 
-    with st.container(border=True):
-        st.markdown(
-            f"""
-        <p style='font-size: 20px;'>
-        {t("This stage includes the following steps:")}
-        <p style='font-size: 20px;'>
-            {_steps_markdown(steps)}
-        """,
-            unsafe_allow_html=True,
-        )
-
-        if not _dubbing_outputs_complete():
-            if runner.is_active:
-                _task_control_panel("_audio_runner")
-            elif runner.is_done:
-                _task_control_panel("_audio_runner")
-            else:
-                if st.button(
-                    t("Start Audio Processing"), key="audio_processing_button"
-                ):
-                    _kickoff("_audio_runner", _get_audio_steps)
-        else:
-            should_render_video = _should_render_video()
-            if not should_render_video:
-                st.success(t("Standalone subtitles and audio are ready in the output folder."))
-                st.audio(DUB_AUDIO)
-                audio_col, subtitle_col = st.columns(2)
-                with audio_col:
-                    _download_output_file(
-                        DUB_AUDIO,
-                        t("Download dubbed audio"),
-                        "audio/mpeg",
-                        "download_dubbed_audio",
-                    )
-                with subtitle_col:
-                    _download_output_file(
-                        DUB_SUBTITLE,
-                        t("Download dubbed subtitle"),
-                        "application/x-subrip",
-                        "download_dubbed_subtitle",
-                    )
-                download_subtitle_zip_button(text=t("Download All Srt Files"))
-            else:
-                st.success(
-                    t(
-                        "Audio processing is complete! You can check the audio files in the `output` folder."
-                    )
-                )
-                if load_key("burn_subtitles"):
-                    st.video(DUB_VIDEO)
-            if st.button(t("Delete dubbing files"), key="delete_dubbing_files"):
-                delete_dubbing_files()
-                st.rerun()
-            if st.button(t("Archive to 'history'"), key="cleanup_in_audio_processing"):
-                cleanup()
-                st.rerun()
+        if audio_ready and st.button(t("Delete dubbing files"), key="delete_dubbing_files"):
+            delete_dubbing_files()
+            st.rerun()
+        if subtitle_ready and audio_ready and st.button(
+            t("Archive to 'history'"), key="cleanup_in_translation_dubbing"
+        ):
+            cleanup()
+            st.rerun()
 
 
 # ─── Main ───
@@ -645,18 +404,15 @@ def main():
         page_setting()
         st.markdown(give_star_button, unsafe_allow_html=True)
     download_video_section()
-    # Multi-speaker picker: if a speaker preview is pending (written by either
-    # the in-process text-pipeline step or the split_pipeline `speaker-preview`
-    # CLI step), render the picker UI in place of the pipeline sections so
-    # the user can audition each speaker and pick a voice / clone / default.
+    # Multi-speaker picker: if a speaker preview is pending, render the picker
+    # in place of the pipeline section so the user can audition each speaker
+    # and pick a voice / clone / default.
     # confirm_picks() clears the pending flag; users then press the start
     # button again to resume the pipeline.
     if render_speaker_picker_if_pending():
         return
     _resume_after_picker_if_needed()
-    text_processing_section()
-    audio_processing_section()
-    split_pipeline_section()
+    translation_dubbing_section()
 
 
 if __name__ == "__main__":
