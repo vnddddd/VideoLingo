@@ -67,6 +67,9 @@ multi_speaker_enabled: false
 # Per-speaker voice picks persisted by the speaker-preview UI.
 # Auto-managed by core/_3_speaker_preview.py::confirm_picks. Leave {} by default.
 speaker_voice_map: {}
+# Render the translated subtitles/dubbed audio into output videos.
+# Set to false to keep output/trans.srt, output/dub.srt, and output/dub.mp3 separate.
+render_final_video: true
 burn_subtitles: false
 
 ## ======================== Advanced Settings ======================== ##

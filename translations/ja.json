@@ -22,6 +22,9 @@
     "Vocal separation enhance": "音声分離強化",
     "Burn-in Subtitles": "字幕を焼き付け",
     "Whether to burn subtitles into the video, will increase processing time": "字幕を動画に焼き付けるかどうか、処理時間が増加します",
+    "Render final video": "最終動画をレンダリング",
+    "Disable to keep translated subtitles and dubbed audio as separate files for use in an external player.": "無効にすると、外部プレーヤーで使用できるよう翻訳字幕と吹き替え音声を別々のファイルとして保存します。",
+    "Separate output mode is enabled: only SRT subtitles and dubbed audio will be generated; no video will be rendered.": "分離出力モードが有効です。SRT字幕と吹き替え音声のみを生成し、動画はレンダリングしません。",
     "Video Resolution": "動画解像度",
     "Recommended for videos with loud background noise, but will increase processing time": "背景ノイズの大きい動画に推奨されますが、処理時間が増加します",
     "Dubbing Settings": "吹き替え設定",
@@ -139,5 +142,9 @@
     "Prepare split pipeline audio": "Prepare split pipeline audio",
     "Package render inputs": "Package render inputs",
     "Run local pipeline until audio is merged": "Run local pipeline until audio is merged",
-    "Render final dubbed video": "Render final dubbed video"
+    "Render final dubbed video": "Render final dubbed video",
+    "Download translated subtitle": "翻訳字幕をダウンロード",
+    "Download dubbed audio": "吹き替え音声をダウンロード",
+    "Download dubbed subtitle": "吹き替え字幕をダウンロード",
+    "Standalone subtitles and audio are ready in the output folder.": "分離された字幕と音声がoutputフォルダーに生成されました。"
 }

@@ -22,6 +22,9 @@
     "Vocal separation enhance": "Улучшение отделения голоса",
     "Burn-in Subtitles": "Встроить субтитры",
     "Whether to burn subtitles into the video, will increase processing time": "Встраивать ли субтитры в видео, это увеличит время обработки",
+    "Render final video": "Рендерить итоговое видео",
+    "Disable to keep translated subtitles and dubbed audio as separate files for use in an external player.": "Отключите, чтобы сохранить перевод субтитров и дубляж отдельными файлами для внешнего проигрывателя.",
+    "Separate output mode is enabled: only SRT subtitles and dubbed audio will be generated; no video will be rendered.": "Включён раздельный режим вывода: будут созданы только субтитры SRT и дублированное аудио, видео рендериться не будет.",
     "Video Resolution": "Разрешение видео",
     "Recommended for videos with loud background noise, but will increase processing time": "Рекомендуется для видео с громким фоновым шумом, но увеличит время обработки",
     "Dubbing Settings": "Настройки дубляжа",
@@ -139,5 +142,9 @@
     "Prepare split pipeline audio": "Prepare split pipeline audio",
     "Package render inputs": "Package render inputs",
     "Run local pipeline until audio is merged": "Run local pipeline until audio is merged",
-    "Render final dubbed video": "Render final dubbed video"
+    "Render final dubbed video": "Render final dubbed video",
+    "Download translated subtitle": "Скачать переведённые субтитры",
+    "Download dubbed audio": "Скачать дублированное аудио",
+    "Download dubbed subtitle": "Скачать субтитры дубляжа",
+    "Standalone subtitles and audio are ready in the output folder.": "Отдельные субтитры и аудио готовы в папке output."
 }

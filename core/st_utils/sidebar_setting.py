@@ -64,6 +64,23 @@ def _ensure_multi_speaker_key():
         pass
 
 
+def _ensure_render_final_video_key():
+    """Add the final-video toggle for configurations created by older versions."""
+    try:
+        from core.utils.config_utils import CONFIG_PATH, lock, yaml as _yaml
+        with lock:
+            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                data = _yaml.load(f)
+            if data is None or 'render_final_video' in data:
+                return
+            data['render_final_video'] = True
+            with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+                _yaml.dump(data, f)
+    except Exception:
+        # A settings migration must never prevent the Web UI from opening.
+        pass
+
+
 def config_input(label, key, help=None, placeholder=None):
     """Generic config input handler"""
     val = st.text_input(label, value=load_key(key), help=help, placeholder=placeholder)
@@ -164,6 +181,7 @@ def page_setting():
     # do not crash this UI on KeyError when load_key('demucs_backend') runs.
     _ensure_demucs_keys()
     _ensure_multi_speaker_key()
+    _ensure_render_final_video_key()
 
     # Widen the sidebar slightly to accommodate the model searchbox
     st.markdown(
@@ -449,6 +467,35 @@ def page_setting():
                 if hf_token != cur_token:
                     update_key("hf_demucs.hf_token", hf_token)
                     st.rerun()
+
+        try:
+            render_final_video_value = load_key("render_final_video")
+            if isinstance(render_final_video_value, str):
+                render_final_video_value = render_final_video_value.strip().lower() not in {
+                    "",
+                    "0",
+                    "false",
+                    "no",
+                    "off",
+                }
+            else:
+                render_final_video_value = bool(render_final_video_value)
+        except Exception:
+            render_final_video_value = True
+        render_final_video = st.toggle(
+            t("Render final video"),
+            value=render_final_video_value,
+            help=t(
+                "Disable to keep translated subtitles and dubbed audio as separate files for use in an external player."
+            ),
+        )
+        if render_final_video != render_final_video_value:
+            update_key("render_final_video", render_final_video)
+            st.rerun()
+        if not render_final_video:
+            st.info(t(
+                "Separate output mode is enabled: only SRT subtitles and dubbed audio will be generated; no video will be rendered."
+            ))
 
         burn_subtitles = st.toggle(
             t("Burn-in Subtitles"),

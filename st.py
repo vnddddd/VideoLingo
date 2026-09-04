@@ -33,16 +33,56 @@ def _is_audio_only_source() -> bool:
     return os.path.exists(RAW_AUDIO) and not _has_source_video()
 
 
+def _render_final_video_enabled() -> bool:
+    """Return the persisted output mode, keeping old configs backward compatible."""
+    try:
+        value = load_key("render_final_video")
+    except Exception:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false", "no", "off"}
+    return bool(value)
+
+
+def _should_render_video() -> bool:
+    """Whether the current run should create a subtitle/dubbed video file."""
+    return not _is_audio_only_source() and _render_final_video_enabled()
+
+
 def _subtitle_outputs_complete() -> bool:
-    if _is_audio_only_source():
+    if not _should_render_video():
         return os.path.exists(TRANS_SUBTITLE)
     return os.path.exists(SUB_VIDEO)
 
 
 def _dubbing_outputs_complete() -> bool:
-    if _is_audio_only_source():
+    if not _should_render_video():
         return os.path.exists(DUB_AUDIO) and os.path.exists(DUB_SUBTITLE)
     return os.path.exists(DUB_VIDEO)
+
+
+def _steps_markdown(steps) -> str:
+    """Render the actual pipeline steps so skipped video stages are not shown."""
+    return "<br>".join(
+        f"{index}. {label}" for index, (label, _func) in enumerate(steps, start=1)
+    )
+
+
+def _download_output_file(path: str, label: str, mime: str, key: str) -> bool:
+    """Add a download button for an output file when it exists."""
+    if not os.path.exists(path):
+        return False
+    with open(path, "rb") as file:
+        data = file.read()
+    st.download_button(
+        label=label,
+        data=data,
+        file_name=os.path.basename(path),
+        mime=mime,
+        key=key,
+        use_container_width=True,
+    )
+    return True
 
 
 def _current_process_identity() -> str | None:
@@ -394,7 +434,7 @@ def _get_text_steps():
             ),
         ),
     ]
-    if not _is_audio_only_source():
+    if _should_render_video():
         steps.append(
             (
                 t("Merging subtitles into the video"),
@@ -407,6 +447,7 @@ def _get_text_steps():
 def text_processing_section():
     st.header(t("b. Translate and Generate Subtitles"))
     runner = TaskRunner.get(st.session_state, "_text_runner")
+    steps = _get_text_steps()
 
     with st.container(border=True):
         st.markdown(
@@ -414,12 +455,7 @@ def text_processing_section():
         <p style='font-size: 20px;'>
         {t("This stage includes the following steps:")}
         <p style='font-size: 20px;'>
-            1. {t("WhisperX word-level transcription")}<br>
-            2. {t("Sentence segmentation using NLP and LLM")}<br>
-            3. {t("Summarization and multi-step translation")}<br>
-            4. {t("Cutting and aligning long subtitles")}<br>
-            5. {t("Generating timeline and subtitles")}<br>
-            6. {t("Merging subtitles into the video")}
+            {_steps_markdown(steps)}
         """,
             unsafe_allow_html=True,
         )
@@ -435,8 +471,15 @@ def text_processing_section():
                 ):
                     _kickoff("_text_runner", _get_text_steps)
         else:
-            if _is_audio_only_source():
+            should_render_video = _should_render_video()
+            if not should_render_video:
                 st.success(t("Subtitle processing is complete!"))
+                _download_output_file(
+                    TRANS_SUBTITLE,
+                    t("Download translated subtitle"),
+                    "application/x-subrip",
+                    "download_translated_subtitle",
+                )
             elif load_key("burn_subtitles"):
                 st.video(SUB_VIDEO)
             download_subtitle_zip_button(text=t("Download All Srt Files"))
@@ -464,7 +507,7 @@ def _get_audio_steps():
         (t("Generate and merge audio files"), _10_gen_audio.gen_audio),
         (t("Merge full audio"), _11_merge_audio.merge_full_audio),
     ]
-    if not _is_audio_only_source():
+    if _should_render_video():
         steps.append((t("Merge final audio into video"), _12_dub_to_vid.merge_video_audio))
     return steps
 
@@ -522,6 +565,7 @@ def split_pipeline_section():
 def audio_processing_section():
     st.header(t("c. Dubbing"))
     runner = TaskRunner.get(st.session_state, "_audio_runner")
+    steps = _get_audio_steps()
 
     with st.container(border=True):
         st.markdown(
@@ -529,10 +573,7 @@ def audio_processing_section():
         <p style='font-size: 20px;'>
         {t("This stage includes the following steps:")}
         <p style='font-size: 20px;'>
-            1. {t("Generate audio tasks and chunks")}<br>
-            2. {t("Extract reference audio")}<br>
-            3. {t("Generate and merge audio files")}<br>
-            4. {t("Merge final audio into video")}
+            {_steps_markdown(steps)}
         """,
             unsafe_allow_html=True,
         )
@@ -548,16 +589,34 @@ def audio_processing_section():
                 ):
                     _kickoff("_audio_runner", _get_audio_steps)
         else:
-            st.success(
-                t(
-                    "Audio processing is complete! You can check the audio files in the `output` folder."
-                )
-            )
-            if _is_audio_only_source():
+            should_render_video = _should_render_video()
+            if not should_render_video:
+                st.success(t("Standalone subtitles and audio are ready in the output folder."))
                 st.audio(DUB_AUDIO)
+                audio_col, subtitle_col = st.columns(2)
+                with audio_col:
+                    _download_output_file(
+                        DUB_AUDIO,
+                        t("Download dubbed audio"),
+                        "audio/mpeg",
+                        "download_dubbed_audio",
+                    )
+                with subtitle_col:
+                    _download_output_file(
+                        DUB_SUBTITLE,
+                        t("Download dubbed subtitle"),
+                        "application/x-subrip",
+                        "download_dubbed_subtitle",
+                    )
                 download_subtitle_zip_button(text=t("Download All Srt Files"))
-            elif load_key("burn_subtitles"):
-                st.video(DUB_VIDEO)
+            else:
+                st.success(
+                    t(
+                        "Audio processing is complete! You can check the audio files in the `output` folder."
+                    )
+                )
+                if load_key("burn_subtitles"):
+                    st.video(DUB_VIDEO)
             if st.button(t("Delete dubbing files"), key="delete_dubbing_files"):
                 delete_dubbing_files()
                 st.rerun()

@@ -22,6 +22,9 @@
     "Vocal separation enhance": "人声分离增强",
     "Burn-in Subtitles": "烧录字幕",
     "Whether to burn subtitles into the video, will increase processing time": "是否将字幕烧录到视频中，会增加处理时间",
+    "Render final video": "渲染最终视频",
+    "Disable to keep translated subtitles and dubbed audio as separate files for use in an external player.": "关闭后将保留独立的翻译字幕和配音音频，方便在外部播放器中加载。",
+    "Separate output mode is enabled: only SRT subtitles and dubbed audio will be generated; no video will be rendered.": "已启用分离输出：只生成 SRT 字幕和配音音频，不会渲染视频。",
     "Video Resolution": "视频分辨率",
     "Recommended for videos with loud background noise, but will increase processing time": "推荐用于背景噪音较大的视频,但会增加处理时间",
     "Dubbing Settings": "配音设置",
@@ -139,5 +142,9 @@
     "Prepare split pipeline audio": "准备拆分流水线音频",
     "Package render inputs": "打包渲染输入",
     "Run local pipeline until audio is merged": "运行本地流水线直到音频合并",
-    "Render final dubbed video": "渲染最终配音视频"
+    "Render final dubbed video": "渲染最终配音视频",
+    "Download translated subtitle": "下载翻译字幕",
+    "Download dubbed audio": "下载配音音频",
+    "Download dubbed subtitle": "下载配音字幕",
+    "Standalone subtitles and audio are ready in the output folder.": "独立字幕和配音音频已生成，可在 output 文件夹中查看。"
 }

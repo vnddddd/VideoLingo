@@ -22,6 +22,9 @@
     "Vocal separation enhance": "Mejora de separación vocal",
     "Burn-in Subtitles": "Incrustar subtítulos",
     "Whether to burn subtitles into the video, will increase processing time": "Si se deben incrustar los subtítulos en el video, aumentará el tiempo de procesamiento",
+    "Render final video": "Renderizar video final",
+    "Disable to keep translated subtitles and dubbed audio as separate files for use in an external player.": "Desactívelo para conservar los subtítulos traducidos y el audio doblado como archivos separados para un reproductor externo.",
+    "Separate output mode is enabled: only SRT subtitles and dubbed audio will be generated; no video will be rendered.": "El modo de salida separada está activado: solo se generarán subtítulos SRT y audio doblado; no se renderizará ningún video.",
     "Video Resolution": "Resolución de video",
     "Recommended for videos with loud background noise, but will increase processing time": "Recomendado para videos con ruido de fondo fuerte, pero aumentará el tiempo de procesamiento",
     "Dubbing Settings": "Configuración de doblaje",
@@ -139,5 +142,9 @@
     "Prepare split pipeline audio": "Prepare split pipeline audio",
     "Package render inputs": "Package render inputs",
     "Run local pipeline until audio is merged": "Run local pipeline until audio is merged",
-    "Render final dubbed video": "Render final dubbed video"
+    "Render final dubbed video": "Render final dubbed video",
+    "Download translated subtitle": "Descargar subtítulo traducido",
+    "Download dubbed audio": "Descargar audio doblado",
+    "Download dubbed subtitle": "Descargar subtítulo doblado",
+    "Standalone subtitles and audio are ready in the output folder.": "Los subtítulos y el audio independientes están listos en la carpeta de salida."
 }

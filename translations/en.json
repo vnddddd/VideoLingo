@@ -22,6 +22,9 @@
     "Vocal separation enhance": "Vocal separation enhance",
     "Burn-in Subtitles": "Burn-in Subtitles",
     "Whether to burn subtitles into the video, will increase processing time": "Whether to burn subtitles into the video, will increase processing time",
+    "Render final video": "Render final video",
+    "Disable to keep translated subtitles and dubbed audio as separate files for use in an external player.": "Disable to keep translated subtitles and dubbed audio as separate files for use in an external player.",
+    "Separate output mode is enabled: only SRT subtitles and dubbed audio will be generated; no video will be rendered.": "Separate output mode is enabled: only SRT subtitles and dubbed audio will be generated; no video will be rendered.",
     "Video Resolution": "Video Resolution",
     "Recommended for videos with loud background noise, but will increase processing time": "Recommended for videos with loud background noise, but will increase processing time",
     "Dubbing Settings": "Dubbing Settings",
@@ -139,5 +142,9 @@
     "Prepare split pipeline audio": "Prepare split pipeline audio",
     "Package render inputs": "Package render inputs",
     "Run local pipeline until audio is merged": "Run local pipeline until audio is merged",
-    "Render final dubbed video": "Render final dubbed video"
+    "Render final dubbed video": "Render final dubbed video",
+    "Download translated subtitle": "Download translated subtitle",
+    "Download dubbed audio": "Download dubbed audio",
+    "Download dubbed subtitle": "Download dubbed subtitle",
+    "Standalone subtitles and audio are ready in the output folder.": "Standalone subtitles and audio are ready in the output folder."
 }
