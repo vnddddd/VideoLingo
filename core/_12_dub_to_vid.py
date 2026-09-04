@@ -8,6 +8,7 @@ from rich.console import Console
 
 from core._1_ytdlp import find_video_files
 from core.utils import *
+from core.utils.loudness import build_normalize_filter, measure_integrated_loudness
 from core.utils.models import *
 
 console = Console()
@@ -15,7 +16,8 @@ console = Console()
 DUB_VIDEO = "output/output_dub.mp4"
 DUB_SUB_FILE = 'output/dub.srt'
 DUB_AUDIO = 'output/dub.mp3'
-FINAL_AUDIO_LOUDNORM_FILTER = 'loudnorm=I=-13:TP=-1.5:LRA=11'
+BACKGROUND_MIX_FILTER = 'amix=inputs=2:duration=first:dropout_transition=3'
+FINAL_AUDIO_SAMPLE_RATE = 48000
 
 TRANS_FONT_SIZE = 17
 TRANS_FONT_NAME = 'Arial'
@@ -62,13 +64,6 @@ def merge_video_audio():
         rprint("[bold yellow]burn_subtitles=False: rendering dub video without subtitle overlay (libass skipped).[/bold yellow]")
 
     # Merge video and audio with translated subtitles.
-    # Final loudness normalization is applied to the final audio stream so the
-    # exported video, not just the standalone dub track, lands at the target
-    # perceived loudness.
-    rprint(
-        f"[bold green]Final audio loudness normalization: "
-        f"{FINAL_AUDIO_LOUDNORM_FILTER}[/bold green]"
-    )
     video = cv2.VideoCapture(VIDEO_FILE)
     TARGET_WIDTH = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
     TARGET_HEIGHT = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -93,20 +88,39 @@ def merge_video_audio():
         video_chain += f",{subtitle_filter}"
     video_chain += "[v]"
 
+    # Final loudness normalization is applied to the audio stream that actually
+    # gets muxed, so the exported video -- not just the standalone dub track --
+    # lands at the target perceived loudness. Measure it first (video excluded,
+    # only audio is decoded) so the render can apply one constant gain instead
+    # of a gain that rides up over every silent gap. See core/utils/loudness.py.
+    if demucs_enabled:
+        measured_lufs = measure_integrated_loudness(
+            ['-i', background_file, '-i', DUB_AUDIO],
+            filter_complex=f'[0:a][1:a]{BACKGROUND_MIX_FILTER}[mix]',
+            audio_label='[mix]',
+        )
+    else:
+        measured_lufs = measure_integrated_loudness(['-i', DUB_AUDIO])
+    audio_filter = build_normalize_filter(measured_lufs, FINAL_AUDIO_SAMPLE_RATE)
+    rprint(
+        f"[bold green]Final audio loudness: measured {measured_lufs:.1f} LUFS, "
+        f"applying {audio_filter}[/bold green]"
+    )
+
     if demucs_enabled:
         cmd = [
             'ffmpeg', '-y', '-i', VIDEO_FILE, '-i', background_file, '-i', DUB_AUDIO,
             '-filter_complex',
             f'{video_chain};'
-            f'[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=3[mixed];'
-            f'[mixed]{FINAL_AUDIO_LOUDNORM_FILTER}[a]'
+            f'[1:a][2:a]{BACKGROUND_MIX_FILTER}[mixed];'
+            f'[mixed]{audio_filter}[a]'
         ]
     else:
         cmd = [
             'ffmpeg', '-y', '-i', VIDEO_FILE, '-i', DUB_AUDIO,
             '-filter_complex',
             f'{video_chain};'
-            f'[1:a]{FINAL_AUDIO_LOUDNORM_FILTER}[a]'
+            f'[1:a]{audio_filter}[a]'
         ]
 
     # Hardware-accelerated encoder selection (cpu/nvenc/qsv/amf/auto)

@@ -8,6 +8,7 @@ uses the shared output/ workspace and checkpoint files.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import mimetypes
 import os
@@ -45,8 +46,27 @@ WORK_OUTPUT_DIRNAME = "work_output"
 JOB_COOKIE_FILE = "cookies.txt"
 OUTPUT_JOB_MARKER = ".browser_bridge_job.json"
 SPEAKER_WAITING_STATUS = "waiting_speaker"
+
+
+def _load_standalone_module(name: str, relative_path: str):
+    """Import a stdlib-only project module without initializing its package.
+
+    ``core/__init__.py`` eagerly imports the whole pipeline (torch, whisperX,
+    ...), which would cost this long-lived bridge process ~18 s and gigabytes
+    of RAM. Loading the helper straight from its file keeps the bridge on the
+    standard library while still sharing one implementation with the pipeline.
+    """
+    spec = importlib.util.spec_from_file_location(name, PROJECT_ROOT / relative_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {relative_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 # Keep plugin playback loudness aligned with core/_12_dub_to_vid.py final video output.
-PLUGIN_AUDIO_LOUDNORM_FILTER = "loudnorm=I=-13:TP=-1.5:LRA=11"
+_loudness = _load_standalone_module("videolingo_loudness", "core/utils/loudness.py")
 
 jobs_lock = threading.RLock()
 run_lock = threading.Lock()
@@ -778,13 +798,21 @@ def _copy_outputs(job_id: str) -> dict[str, str]:
 
 
 def _normalize_plugin_audio(src: Path, dst: Path) -> None:
+    # Measure first, then apply one constant gain plus a limiter. A one-pass
+    # loudnorm would ride its gain up over the silent gaps between dubbed lines
+    # and pop on the first syllable after each pause. See core/utils/loudness.py.
+    measured_lufs = _loudness.measure_integrated_loudness(["-i", str(src)])
+    # Keep the plugin copy at the dub's own rate; it is 16 kHz speech, so
+    # resampling it up would only inflate the download.
+    sample_rate = _loudness.probe_sample_rate(src)
+    audio_filter = _loudness.build_normalize_filter(measured_lufs, sample_rate)
     command = [
         "ffmpeg",
         "-y",
         "-i",
         str(src),
         "-filter:a",
-        PLUGIN_AUDIO_LOUDNORM_FILTER,
+        audio_filter,
         "-b:a",
         "96k",
         str(dst),

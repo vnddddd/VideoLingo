@@ -61,9 +61,11 @@ _MODE_MIMO_VOICE_DESIGN = "mimo_voicedesign"
 _MODE_CLONE = "clone"
 _MODE_DEFAULT = "default"
 
-# Backend used whenever a speaker is configured for voice cloning. Matches
-# the plan (C4 step in plan_multispeaker): clone -> gpt_sovits + spk{i}.wav.
-_CLONE_BACKEND = "gpt_sovits"
+# Backend used whenever a speaker is configured for voice cloning:
+# clone -> soniox_tts + spk{i}.wav. soniox_tts resolves an `is_clone` entry by
+# creating (or reusing) a cloned voice from ref_wav, so the reference clip is
+# passed through unchanged.
+_CLONE_BACKEND = "soniox_tts"
 _QWEN3_BACKEND = "qwen3_tts"
 _MIMO_BACKEND = "mimo_tts"
 _MIMO_VOICE_DESIGN_MODEL = "mimo-v2.5-tts-voicedesign"

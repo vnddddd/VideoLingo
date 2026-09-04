@@ -43,11 +43,12 @@ speaker uses that voice.
 > routed to edge_tts.
 
 ### 3. `clone`
-Upload a reference clip (WAV / MP3, 3-10 s recommended). The pipeline uses GPT-SoVITS
-(or the backend's own voice-clone path) to imitate the timbre.
+Upload a reference clip (WAV / MP3, 3-10 s recommended). The pipeline uses Soniox voice
+cloning (or the backend's own voice-clone path) to imitate the timbre.
 
 Clone-capable backends:
-- **gpt_sovits** (default)
+- **soniox_tts** (default) — creates/reuses a cloned voice from ref_wav; clips over 18 s are trimmed
+- **gpt_sovits**
 - **sf_cosyvoice2** — feeds ref_wav directly, bypassing the `refers/<n>.wav` flow
 - **sf_fishtts** — forces dynamic mode
 - **mimo** — auto-switches to the `mimo-v2.5-tts-voiceclone` model

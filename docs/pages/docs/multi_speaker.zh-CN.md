@@ -38,10 +38,11 @@ VideoLingo 自 v2.x 起支持「同一视频里识别出多个说话人并为每
 > 可跨 backend:全局 tts_method 是 azure,但某 speaker 可单独走 edge_tts。
 
 ### 3. `clone`
-上传一段该 speaker 的参考音频(WAV / MP3,3-10 秒最佳),pipeline 用 GPT-SoVITS(或 backend 自带的 voice-clone 通道)模仿。
+上传一段该 speaker 的参考音频(WAV / MP3,3-10 秒最佳),pipeline 用 Soniox 的 voice clone(或 backend 自带的 voice-clone 通道)模仿。
 
 支持 clone 的 backend:
-- **gpt_sovits**(默认)
+- **soniox_tts**(默认)——用 ref_wav 创建/复用云端克隆音色,参考片段超过 18 秒会自动裁剪
+- **gpt_sovits**
 - **sf_cosyvoice2** —— 直接喂 ref_wav,绕过 `refers/<n>.wav` 流程
 - **sf_fishtts** —— 强制 dynamic 模式
 - **mimo** —— 自动切到 `mimo-v2.5-tts-voiceclone` 模型

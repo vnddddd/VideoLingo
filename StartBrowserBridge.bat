@@ -7,3 +7,6 @@ if exist ".venv\Scripts\python.exe" (
 ) else (
   python -u tools\browser_bridge.py
 )
+echo.
+echo [Bridge exited with code %ERRORLEVEL%]
+pause
