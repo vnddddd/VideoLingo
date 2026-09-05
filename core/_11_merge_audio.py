@@ -2,15 +2,16 @@ import os
 import wave
 import pandas as pd
 import numpy as np  # noqa: F401  # required by eval() for cells containing np.float64(...) repr (numpy 2.x)
-import subprocess
 from pydub import AudioSegment
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.console import Console
 from core.utils import *
+from core.utils.loudness import normalize_audio_file
 from core.utils.models import *
 console = Console()
 
 DUB_VOCAL_FILE = 'output/dub.mp3'
+DUB_NORMALIZED_FILE = 'output/dub_loudnorm.mp3'
 
 DUB_SUB_FILE = 'output/dub.srt'
 OUTPUT_FILE_TEMPLATE = f"{_AUDIO_SEGS_DIR}/{{}}.wav"
@@ -110,6 +111,22 @@ def create_srt_subtitle():
             f.write(f"{line}\n\n")
     
     rprint(f"[bold green]OK: Subtitle file created: {DUB_SUB_FILE}[/bold green]")
+
+
+def normalize_dub_audio():
+    """Create the loudness-balanced dub used by the Web UI."""
+    console.print("[bold cyan]Normalizing final dubbed audio...[/bold cyan]")
+    measured_lufs, sample_rate, audio_filter = normalize_audio_file(
+        DUB_VOCAL_FILE,
+        DUB_NORMALIZED_FILE,
+        bitrate="96k",
+    )
+    console.print(
+        f"[bold green]OK: Dub loudness measured {measured_lufs:.1f} LUFS; "
+        f"normalized at {sample_rate} Hz with {audio_filter}[/bold green]"
+    )
+    console.print(f"[bold green]Output file: {DUB_NORMALIZED_FILE}[/bold green]")
+    return DUB_NORMALIZED_FILE
 
 def merge_full_audio():
     """Main function: Process the complete audio merging process"""

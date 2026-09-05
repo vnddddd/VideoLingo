@@ -801,26 +801,9 @@ def _normalize_plugin_audio(src: Path, dst: Path) -> None:
     # Measure first, then apply one constant gain plus a limiter. A one-pass
     # loudnorm would ride its gain up over the silent gaps between dubbed lines
     # and pop on the first syllable after each pause. See core/utils/loudness.py.
-    measured_lufs = _loudness.measure_integrated_loudness(["-i", str(src)])
-    # Keep the plugin copy at the dub's own rate; it is 16 kHz speech, so
-    # resampling it up would only inflate the download.
-    sample_rate = _loudness.probe_sample_rate(src)
-    audio_filter = _loudness.build_normalize_filter(measured_lufs, sample_rate)
-    command = [
-        "ffmpeg",
-        "-y",
-        "-i",
-        str(src),
-        "-filter:a",
-        audio_filter,
-        "-b:a",
-        "96k",
-        str(dst),
-    ]
-    result = subprocess.run(command, cwd=PROJECT_ROOT, text=True, capture_output=True)
-    if result.returncode != 0 or not dst.exists():
-        details = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(f"Failed to normalize plugin audio with ffmpeg: {details}")
+    # Keep the copy at the dub's own rate; it is 16 kHz speech, so resampling
+    # it up would only inflate the download.
+    _loudness.normalize_audio_file(src, dst, bitrate="96k")
 
 
 def _run_split_pipeline(args: list[str], log_file: Path) -> None:

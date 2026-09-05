@@ -15,7 +15,8 @@ st.set_page_config(page_title="VideoLingo", page_icon="docs/logo.svg")
 
 SUB_VIDEO = "output/output_sub.mp4"
 DUB_VIDEO = "output/output_dub.mp4"
-DUB_AUDIO = "output/dub.mp3"
+DUB_RAW_AUDIO = "output/dub.mp3"
+DUB_AUDIO = "output/dub_loudnorm.mp3"
 DUB_SUBTITLE = "output/dub.srt"
 TRANS_SUBTITLE = "output/trans.srt"
 RAW_AUDIO = "output/audio/raw.mp3"
@@ -55,9 +56,10 @@ def _subtitle_outputs_complete() -> bool:
 
 
 def _dubbing_outputs_complete() -> bool:
+    standalone_outputs_ready = os.path.exists(DUB_AUDIO) and os.path.exists(DUB_SUBTITLE)
     if not _should_render_video():
-        return os.path.exists(DUB_AUDIO) and os.path.exists(DUB_SUBTITLE)
-    return os.path.exists(DUB_VIDEO)
+        return standalone_outputs_ready
+    return standalone_outputs_ready and os.path.exists(DUB_VIDEO)
 
 
 def _steps_markdown(steps) -> str:
@@ -270,6 +272,7 @@ def _get_audio_steps():
         (t("Extract reference audio"), _9_refer_audio.extract_refer_audio_main),
         (t("Generate and merge audio files"), _10_gen_audio.gen_audio),
         (t("Merge full audio"), _11_merge_audio.merge_full_audio),
+        (t("Normalize final dubbed audio"), _11_merge_audio.normalize_dub_audio),
     ]
     if _should_render_video():
         steps.append((t("Merge final audio into video"), _12_dub_to_vid.merge_video_audio))
@@ -279,10 +282,25 @@ def _get_audio_steps():
 def _get_translation_dubbing_steps():
     """Build one continuous workflow, skipping stages whose outputs already exist."""
     steps = []
-    if not _subtitle_outputs_complete():
+    subtitle_ready = _subtitle_outputs_complete()
+    if not subtitle_ready:
         steps.extend(_get_text_steps())
     if not _dubbing_outputs_complete():
-        steps.extend(_get_audio_steps())
+        # A run from an older version may already have the raw dub and subtitle.
+        # In separate-output mode, only add the new loudness pass instead of
+        # repeating all TTS work.
+        raw_dub_ready = os.path.exists(DUB_RAW_AUDIO) and os.path.exists(DUB_SUBTITLE)
+        if subtitle_ready and raw_dub_ready:
+            if not os.path.exists(DUB_AUDIO):
+                steps.append(
+                    (t("Normalize final dubbed audio"), _11_merge_audio.normalize_dub_audio)
+                )
+            if _should_render_video() and not os.path.exists(DUB_VIDEO):
+                steps.append(
+                    (t("Merge final audio into video"), _12_dub_to_vid.merge_video_audio)
+                )
+        else:
+            steps.extend(_get_audio_steps())
     return steps
 
 
@@ -320,22 +338,23 @@ def _render_dubbing_outputs() -> bool:
             st.video(DUB_VIDEO)
     else:
         st.success(t("Standalone subtitles and audio are ready in the output folder."))
-        st.audio(DUB_AUDIO)
-        audio_col, subtitle_col = st.columns(2)
-        with audio_col:
-            _download_output_file(
-                DUB_AUDIO,
-                t("Download dubbed audio"),
-                "audio/mpeg",
-                "download_dubbed_audio",
-            )
-        with subtitle_col:
-            _download_output_file(
-                DUB_SUBTITLE,
-                t("Download dubbed subtitle"),
-                "application/x-subrip",
-                "download_dubbed_subtitle",
-            )
+
+    st.audio(DUB_AUDIO)
+    audio_col, subtitle_col = st.columns(2)
+    with audio_col:
+        _download_output_file(
+            DUB_AUDIO,
+            t("Download dubbed audio"),
+            "audio/mpeg",
+            "download_dubbed_audio",
+        )
+    with subtitle_col:
+        _download_output_file(
+            DUB_SUBTITLE,
+            t("Download dubbed subtitle"),
+            "application/x-subrip",
+            "download_dubbed_subtitle",
+        )
     return True
 
 

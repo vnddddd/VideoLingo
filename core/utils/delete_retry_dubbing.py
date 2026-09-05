@@ -5,6 +5,7 @@ def delete_dubbing_files():
     files_to_delete = [
         os.path.join("output", "dub.wav"),
         os.path.join("output", "dub.mp3"),
+        os.path.join("output", "dub_loudnorm.mp3"),
         os.path.join("output", "dub.srt"),
         os.path.join("output", "output_dub.mp4")
     ]

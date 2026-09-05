@@ -1,4 +1,4 @@
-"""Loudness normalization shared by the final video render and the browser bridge.
+"""Loudness normalization shared by Web UI, final video, and browser bridge.
 
 ffmpeg's one-pass ``loudnorm`` normalizes in *dynamic* mode: it recomputes the
 gain every 100 ms from a sliding window, so a pause in the dub lets the gain
@@ -15,8 +15,11 @@ peaks down -- never boosts an onset.
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+import tempfile
+from pathlib import Path
 
 # Perceived loudness we aim for, and the peak ceiling we refuse to cross.
 TARGET_LOUDNESS_LUFS = -13.0
@@ -118,3 +121,71 @@ def build_normalize_filter(measured_lufs: float, sample_rate: int) -> str:
         f"alimiter=limit={TARGET_TRUE_PEAK_DBFS:.2f}dB:level=disabled,"
         f"aresample={sample_rate}"
     )
+
+
+def normalize_audio_file(
+    src: str | Path,
+    dst: str | Path,
+    *,
+    bitrate: str = "96k",
+) -> tuple[float, int, str]:
+    """Normalize one audio file into ``dst`` with the shared two-pass method.
+
+    The destination is written through a temporary file and atomically replaced
+    only after ffmpeg succeeds, so a failed normalization cannot corrupt an
+    existing final output. Returns ``(measured_lufs, sample_rate, filter)`` for
+    logging and tests.
+    """
+    source = Path(src).resolve()
+    destination = Path(dst).resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"Audio file not found: {source}")
+    if source == destination:
+        raise ValueError("Source and destination must be different audio files")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    measured_lufs = measure_integrated_loudness(["-i", str(source)])
+    sample_rate = probe_sample_rate(source)
+    audio_filter = build_normalize_filter(measured_lufs, sample_rate)
+
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{destination.stem}.",
+        suffix=destination.suffix,
+        dir=destination.parent,
+    )
+    os.close(fd)
+    temp_path = Path(temp_name)
+    try:
+        command = [
+            "ffmpeg",
+            "-hide_banner",
+            "-y",
+            "-i",
+            str(source),
+            "-map",
+            "0:a:0",
+            "-vn",
+            "-filter:a",
+            audio_filter,
+            "-b:a",
+            bitrate,
+            str(temp_path),
+        ]
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if result.returncode != 0 or not temp_path.is_file() or temp_path.stat().st_size == 0:
+            details = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(
+                f"ffmpeg failed to normalize audio (return code {result.returncode}): "
+                f"{details[-2000:]}"
+            )
+        os.replace(temp_path, destination)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+    return measured_lufs, sample_rate, audio_filter
