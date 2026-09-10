@@ -4,6 +4,7 @@ import time
 import shutil
 import subprocess
 import threading
+from pathlib import Path
 from typing import Optional, Tuple
 
 import numpy as np
@@ -417,16 +418,70 @@ def process_row(row: pd.Series, tasks_df: pd.DataFrame) -> Tuple[int, float]:
         real_dur += get_audio_duration(temp_file)
     return number, real_dur
 
+# Cached per-line wavs live in _AUDIO_TMP_DIR and are keyed by line number
+# only -- the filename carries no record of which backend produced it. Since
+# tts_main returns early whenever the file already exists, switching TTS method
+# and re-running would silently reuse the previous backend's audio. This marker
+# records which method filled the cache; a mismatch clears it.
+_TTS_CACHE_MARKER = f"{_AUDIO_TMP_DIR}/.tts_method"
+
+
+def _invalidate_stale_tts_cache(current_method: str) -> None:
+    """Drop cached per-line wavs (and derived segments) when the TTS method changed.
+
+    Without this, re-running a video after switching backends appears to succeed
+    while quietly serving the old backend's clips -- the cache key is the line
+    number, not (line number, method).
+    """
+    marker = Path(_TTS_CACHE_MARKER)
+    try:
+        previous = marker.read_text(encoding="utf-8").strip()
+    except Exception:
+        previous = ""
+
+    if previous and previous != current_method:
+        tmp_dir = Path(_AUDIO_TMP_DIR)
+        stale = list(tmp_dir.glob("*.wav")) if tmp_dir.is_dir() else []
+        if stale:
+            rprint(
+                f"[yellow]TTS method changed ({previous} -> {current_method}); "
+                f"discarding {len(stale)} cached clip(s) so the new backend is "
+                f"actually used[/yellow]"
+            )
+            for f in stale:
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+        # Segments are speed-adjusted copies of those clips, so they are stale too.
+        segs = Path(_AUDIO_SEGS_DIR)
+        if segs.is_dir():
+            for f in segs.glob("*.wav"):
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(current_method, encoding="utf-8")
+    except Exception:
+        pass
+
+
 def generate_tts_audio(tasks_df: pd.DataFrame) -> pd.DataFrame:
     """Generate TTS audio sequentially and calculate actual duration"""
     tasks_df['real_dur'] = 0
     rprint("[bold green]Starting TTS audio generation...[/bold green]")
 
-    # One-off housekeeping for backends that keep server-side state. Fish Audio
-    # creates a persistent voice model per distinct reference clip and the
-    # account has a small slot allowance, so prune this project's own older
+    # Backend-specific housekeeping, run once before any line is generated.
+    current_method = load_key("tts_method")
+    _invalidate_stale_tts_cache(current_method)
+
+    # Fish Audio creates a persistent voice model per distinct reference clip and
+    # the account has a small slot allowance, so prune this project's own older
     # models before generating. Non-fatal and a no-op for every other backend.
-    if load_key("tts_method") == "fish_audio_tts":
+    if current_method == "fish_audio_tts":
         try:
             from core.tts_backend.fish_audio_tts import prepare_for_run
             prepare_for_run()
