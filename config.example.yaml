@@ -117,7 +117,7 @@ reflect_translate: true
 pause_before_translate: false
 
 ## ======================== Dubbing Settings ======================== ##
-# TTS selection [sf_fish_tts, openai_tts, qwen3_tts, soniox_tts, gpt_sovits, azure_tts, fish_tts, edge_tts, custom_tts]
+# TTS selection [sf_fish_tts, fish_audio_tts, openai_tts, qwen3_tts, soniox_tts, gpt_sovits, azure_tts, fish_tts, edge_tts, custom_tts]
 tts_method: 'qwen3_tts'
 # Number of concurrent TTS audio generation requests. gpt_sovits is still forced to 1.
 tts_max_workers: 3
@@ -185,6 +185,40 @@ fish_tts:
   character_id_dict:
     'AD学姐': '7f92f8afb8ec43bf81429cc1c9199cb1'
     '丁真': '54a5170264694bfc8e9ad98df7bd89c3'
+
+# Fish Audio (official API) — docs: https://docs.fish.audio/api-reference/endpoint/tts
+# Distinct from the two reseller backends above:
+#   fish_tts    -> 302.ai relay, limited to a hardcoded character list
+#   sf_fish_tts -> SiliconFlow, pinned to the older fish-speech-1.4 model
+# This one talks to api.fish.audio directly, so it gets the S2.1-Pro family
+# and real voice cloning. Get a key at https://fish.audio/app/api-keys
+fish_audio_tts:
+  api_key: ''
+  # s2.1-pro-free is the free tier of S2.1-Pro (same model, no latency
+  # guarantee) and is the right default for a free-package key.
+  # Switch to 's2.1-pro' once the account carries paid API credit.
+  model: 's2.1-pro-free'
+  # preset  -> use reference_id below (no cloning)
+  # custom  -> ID cloning: upload the reference once, then send only its id.
+  #            Bandwidth-friendly; this is the recommended default.
+  # dynamic -> instant cloning: re-upload the reference clip on EVERY line.
+  #            No server-side setup, but saturates a slow uplink on long videos.
+  mode: 'custom'
+  # Only for mode 'preset'. A voice id from https://fish.audio/discovery
+  # (the trailing segment of a voice's share URL).
+  reference_id: ''
+  # Text chunk size, 100-300. Larger is more stable, slower to first audio.
+  chunk_length: 200
+  # Expressiveness, 0-1. Higher is more varied, lower more consistent.
+  temperature: 0.7
+  # How many VIDEOS' worth of cloned voices to keep on the account.
+  # Counts videos, not voices: a multi-speaker video clones one model per
+  # speaker and all of them are kept together, so a 6-speaker video works fine
+  # here and is never pruned mid-run. Before each dubbing run, whole older
+  # videos are evicted (oldest first) until at most this many remain. Only
+  # models this project created (titled 'vl_...') are ever removed — voices
+  # you made by hand in the Fish Audio studio are never touched.
+  max_voice_slots: 3
 
 # SiliconFlow CosyVoice2 Clone
 sf_cosyvoice2:

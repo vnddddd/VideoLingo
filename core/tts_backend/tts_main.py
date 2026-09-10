@@ -10,6 +10,7 @@ from core.tts_backend.qwen3_tts import qwen3_tts
 from core.tts_backend.soniox_tts import soniox_tts
 from core.tts_backend.indextts2_tts import indextts2_tts_for_videolingo
 from core.tts_backend.fish_tts import fish_tts
+from core.tts_backend.fish_audio_tts import fish_audio_tts
 from core.tts_backend.azure_tts import azure_tts
 from core.tts_backend.edge_tts import edge_tts
 from core.tts_backend.sf_cosyvoice2 import cosyvoice_tts_for_videolingo
@@ -155,6 +156,8 @@ def tts_main(text, save_as, number, task_df, speaker_id=None, speed=None):
                 gpt_sovits_tts_for_videolingo(text, save_as, number, task_df, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'fish_tts':
                 fish_tts(text, save_as, voice_cfg=voice_cfg)
+            elif TTS_METHOD == 'fish_audio_tts':
+                fish_audio_tts(text, save_as, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'azure_tts':
                 azure_tts(text, save_as, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'sf_fish_tts':

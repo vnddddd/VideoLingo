@@ -55,11 +55,19 @@ def siliconflow_fish_tts(text, save_path, mode="preset", voice_id=None, ref_audi
         rprint(f"[green]Successfully generated audio file: {wav_file_path}")
         return True
         
-    error_msg = response.json()
-    rprint(f"[red]Failed to generate audio | HTTP {response.status_code} (Attempt {attempt + 1}/{max_retries})")
+    # NOTE: this scope has no `attempt`/`max_retries` locals — the old message
+    # referenced them and raised NameError, masking the real API error. The
+    # except_handler decorator already reports the retry count.
+    # response.json() also throws on a non-JSON error body (e.g. an HTML 502
+    # from the gateway), which would likewise bury the real status code.
+    try:
+        error_msg = response.json()
+    except Exception:
+        error_msg = response.text[:500]
+    rprint(f"[red]Failed to generate audio | HTTP {response.status_code}")
     rprint(f"[red]Text: {text}")
     rprint(f"[red]Error details: {error_msg}")
-            
+
     return False
 
 @except_handler("Failed to create custom voice")

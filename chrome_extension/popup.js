@@ -31,9 +31,14 @@ const INTEGER_KEYS = new Set([
   "api.max_workers",
   "whisper.max_workers",
   "tts_max_workers",
-  "gpt_sovits.refer_mode"
+  "gpt_sovits.refer_mode",
+  "fish_audio_tts.chunk_length"
 ]);
-const FLOAT_KEYS = new Set(["indextts2.emo_weight", "soniox_tts.speed"]);
+const FLOAT_KEYS = new Set([
+  "indextts2.emo_weight",
+  "soniox_tts.speed",
+  "fish_audio_tts.temperature"
+]);
 const LIST_TEXT_KEYS = new Set(["indextts2.base_url"]);
 
 const OPTIONS = {
@@ -72,6 +77,7 @@ const OPTIONS = {
     ["qwen3_tts", "qwen3_tts"],
     ["soniox_tts", "soniox_tts"],
     ["fish_tts", "fish_tts"],
+    ["fish_audio_tts", "fish_audio_tts (官方 API)"],
     ["sf_fish_tts", "sf_fish_tts"],
     ["edge_tts", "edge_tts"],
     ["gpt_sovits", "gpt_sovits"],
@@ -182,6 +188,17 @@ const OPTIONS = {
     ["preset", "Preset"],
     ["custom", "Refer_stable"],
     ["dynamic", "Refer_dynamic"]
+  ],
+  "fish_audio_tts.model": [
+    ["s2.1-pro-free", "s2.1-pro-free（免费档，推荐先用这个）"],
+    ["s2.1-pro", "s2.1-pro（需付费 API 额度）"],
+    ["s2-pro", "s2-pro（需付费 API 额度）"],
+    ["s1", "s1（仅付费，不支持多说话人）"]
+  ],
+  "fish_audio_tts.mode": [
+    ["preset", "Preset - 用 Fish 语音库的音色"],
+    ["custom", "Refer_stable - ID克隆（只上传一次音频，推荐）"],
+    ["dynamic", "Refer_dynamic - 即时克隆（每句都重传音频）"]
   ],
   "gpt_sovits.refer_mode": [
     ["1", "Mode 1: Use provided reference audio only"],

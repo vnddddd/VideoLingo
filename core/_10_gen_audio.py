@@ -421,6 +421,18 @@ def generate_tts_audio(tasks_df: pd.DataFrame) -> pd.DataFrame:
     """Generate TTS audio sequentially and calculate actual duration"""
     tasks_df['real_dur'] = 0
     rprint("[bold green]Starting TTS audio generation...[/bold green]")
+
+    # One-off housekeeping for backends that keep server-side state. Fish Audio
+    # creates a persistent voice model per distinct reference clip and the
+    # account has a small slot allowance, so prune this project's own older
+    # models before generating. Non-fatal and a no-op for every other backend.
+    if load_key("tts_method") == "fish_audio_tts":
+        try:
+            from core.tts_backend.fish_audio_tts import prepare_for_run
+            prepare_for_run()
+        except Exception as e:  # noqa: BLE001 - housekeeping must not stop a run
+            rprint(f"[yellow]Fish Audio pre-run housekeeping skipped: {e}[/yellow]")
+
     
     with Progress() as progress:
         task = progress.add_task("[cyan]Generating TTS audio...", total=len(tasks_df))
