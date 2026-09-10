@@ -151,5 +151,21 @@
     "Download translated subtitle": "翻訳字幕をダウンロード",
     "Download dubbed audio": "吹き替え音声をダウンロード",
     "Download dubbed subtitle": "吹き替え字幕をダウンロード",
-    "Standalone subtitles and audio are ready in the output folder.": "分離された字幕と音声がoutputフォルダーに生成されました。"
+    "Standalone subtitles and audio are ready in the output folder.": "分離された字幕と音声がoutputフォルダーに生成されました。",
+    "Step timings": "処理時間",
+    "Timings will appear here when a new task starts. Earlier work cannot be timed retroactively.": "新しいタスクを開始すると、各ステップの処理時間が表示されます。過去の未記録の時間は復元できません。",
+    "Total processing time": "累計処理時間",
+    "Source duration": "元の音声・動画の長さ",
+    "Processing time / source duration": "処理時間 / 元の長さ",
+    "Stopping...": "停止中…",
+    "Completed": "完了",
+    "Recorded": "記録済み",
+    "Step": "ステップ",
+    "Status": "状態",
+    "Elapsed": "処理時間",
+    "Share": "割合",
+    "Runs": "実行回数",
+    "Step times include retries; waiting between steps is excluded. Times use m:ss or h:mm:ss.": "再試行の時間を含み、ステップ間の待機時間は除きます。形式は 分:秒 または 時:分:秒 です。",
+    "Download timing log": "処理時間ログをダウンロード",
+    "Error details": "エラーの詳細"
 }

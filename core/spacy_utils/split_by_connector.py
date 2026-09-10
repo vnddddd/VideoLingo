@@ -2,6 +2,7 @@ import os
 import warnings
 from core.spacy_utils.load_nlp_model import init_nlp, SPLIT_BY_COMMA_FILE, SPLIT_BY_CONNECTOR_FILE
 from core.utils import rprint
+from core.utils.step_diagnostics import diagnostic_progress
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -131,7 +132,8 @@ def split_sentences_main(nlp):
     
     all_split_sentences = []
     # Process each input sentence
-    for sentence in sentences:
+    for index, sentence in enumerate(sentences):
+        diagnostic_progress(sentence_index=index, sentence_count=len(sentences))
         split_sentences = split_by_connectors(sentence.strip(), nlp = nlp)
         all_split_sentences.extend(split_sentences)
     

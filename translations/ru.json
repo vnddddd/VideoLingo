@@ -151,5 +151,21 @@
     "Download translated subtitle": "Скачать переведённые субтитры",
     "Download dubbed audio": "Скачать дублированное аудио",
     "Download dubbed subtitle": "Скачать субтитры дубляжа",
-    "Standalone subtitles and audio are ready in the output folder.": "Отдельные субтитры и аудио готовы в папке output."
+    "Standalone subtitles and audio are ready in the output folder.": "Отдельные субтитры и аудио готовы в папке output.",
+    "Step timings": "Время по этапам",
+    "Timings will appear here when a new task starts. Earlier work cannot be timed retroactively.": "Время появится после запуска новой задачи. Ранее не записанное время восстановить нельзя.",
+    "Total processing time": "Общее время обработки",
+    "Source duration": "Длительность исходного материала",
+    "Processing time / source duration": "Время обработки / исходная длительность",
+    "Stopping...": "Остановка…",
+    "Completed": "Завершено",
+    "Recorded": "Записано",
+    "Step": "Этап",
+    "Status": "Статус",
+    "Elapsed": "Время",
+    "Share": "Доля",
+    "Runs": "Запуски",
+    "Step times include retries; waiting between steps is excluded. Times use m:ss or h:mm:ss.": "Время включает повторные попытки, но не ожидание между этапами. Формат: м:сс или ч:мм:сс.",
+    "Download timing log": "Скачать журнал времени",
+    "Error details": "Подробности ошибки"
 }

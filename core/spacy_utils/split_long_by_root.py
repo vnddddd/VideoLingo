@@ -4,6 +4,7 @@ import warnings
 from core.spacy_utils.load_nlp_model import init_nlp, SPLIT_BY_CONNECTOR_FILE
 from core.utils import *
 from core.utils.models import _3_1_SPLIT_BY_NLP
+from core.utils.step_diagnostics import diagnostic_progress
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -66,7 +67,8 @@ def split_long_by_root_main(nlp):
         sentences = input_file.readlines()
 
     all_split_sentences = []
-    for sentence in sentences:
+    for index, sentence in enumerate(sentences):
+        diagnostic_progress(sentence_index=index, sentence_count=len(sentences))
         doc = nlp(sentence.strip())
         if len(doc) > 60:
             split_sentences = split_long_sentence(doc)

@@ -2,6 +2,7 @@ import itertools
 import os
 import warnings
 from core.utils import *
+from core.utils.step_diagnostics import diagnostic_progress
 from core.spacy_utils.load_nlp_model import init_nlp, SPLIT_BY_COMMA_FILE, SPLIT_BY_MARK_FILE
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -50,7 +51,8 @@ def split_by_comma_main(nlp):
         sentences = input_file.readlines()
 
     all_split_sentences = []
-    for sentence in sentences:
+    for index, sentence in enumerate(sentences):
+        diagnostic_progress(sentence_index=index, sentence_count=len(sentences))
         split_sentences = split_by_comma(sentence.strip(), nlp)
         all_split_sentences.extend(split_sentences)
 

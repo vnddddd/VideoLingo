@@ -322,6 +322,7 @@ def fit_or_shorten_line(
     target_duration: float,
     speed_factor: float,
     max_rewrites: int = 2,
+    allow_overrun: bool = True,
 ) -> float:
     max_speed_factor = float(load_key("speed_factor.max"))
     min_duration = MIN_SEGMENT_DURATION_MS / 1000
@@ -331,7 +332,7 @@ def fit_or_shorten_line(
     overrun = duration - target_duration
 
     if target_duration <= min_duration:
-        if overrun <= SAFE_TIMELINE_OVERRUN_SECONDS:
+        if allow_overrun and overrun <= SAFE_TIMELINE_OVERRUN_SECONDS:
             rprint(
                 f"[yellow]Audio target is too short ({target_duration:.3f}s); keeping current audio "
                 f"and allowing {overrun:.3f}s overrun: {original_text}[/yellow]"
@@ -362,7 +363,7 @@ def fit_or_shorten_line(
         except AudioFitTooFastError:
             duration = get_audio_duration(output_file)
             overrun = duration - target_duration
-            if overrun <= SAFE_TIMELINE_OVERRUN_SECONDS:
+            if allow_overrun and overrun <= SAFE_TIMELINE_OVERRUN_SECONDS:
                 rprint(
                     f"[yellow]Audio exceeds target by {overrun:.3f}s; keeping current audio "
                     f"and allowing timeline overrun: {original_text}[/yellow]"
@@ -374,7 +375,7 @@ def fit_or_shorten_line(
 
             shortened_text = shorten_text_for_audio_fit(original_text, raw_target_duration)
             if shortened_text == original_text:
-                if is_short_unshrinkable_text(original_text):
+                if allow_overrun and is_short_unshrinkable_text(original_text):
                     rprint(
                         f"[yellow]Short subtitle cannot be shortened safely; keeping current audio "
                         f"and allowing {overrun:.3f}s overrun: {original_text}[/yellow]"
@@ -483,6 +484,71 @@ def process_chunk(chunk_df: pd.DataFrame, accept: float, min_speed: float) -> tu
     speed_factor = min(speed_factor, max_speed)
     return round(speed_factor, 3), keep_gaps
 
+def fit_chunk_audio(tasks_df, start_index, end_index, durations, available_duration, speed_factor, keep_gaps):
+    """Share a chunk's time deficit across its clips, longest first."""
+    chunk = tasks_df.iloc[start_index:end_index + 1]
+    segments = [
+        (row_index, line_index, (row['number'], line_index))
+        for row_index, row in chunk.iterrows()
+        for line_index in range(len(parse_lines_value(row['lines'])))
+    ]
+    audio_duration = sum(durations[key] for _, _, key in segments)
+    gap_duration = float(chunk.iloc[:-1]['gap'].clip(lower=0).sum()) / speed_factor if keep_gaps else 0.0
+    if audio_duration + gap_duration <= available_duration:
+        return keep_gaps
+
+    # Reclaim optional pauses before asking any speech to become shorter.
+    keep_gaps = False
+    if audio_duration <= available_duration:
+        return keep_gaps
+
+    rprint(
+        f"[yellow]Chunk {start_index} to {end_index} exceeds its window by "
+        f"{audio_duration - available_duration:.3f}s; rebalancing audio durations[/yellow]"
+    )
+    min_duration = (MIN_SEGMENT_DURATION_MS + 1) / 1000
+    segments.sort(key=lambda item: durations[item[2]], reverse=True)
+    last_error = None
+    for position, (row_index, line_index, key) in enumerate(segments):
+        excess = audio_duration - available_duration
+        if excess <= 0.001:
+            break
+        remaining_capacity = sum(
+            max(0.0, durations[k] - min_duration)
+            for _, _, k in segments[position:]
+        )
+        duration = durations[key]
+        if remaining_capacity <= 0 or duration <= min_duration:
+            continue
+        reduction = excess * (duration - min_duration) / remaining_capacity
+        target_duration = max(min_duration, duration - reduction)
+        output_file = OUTPUT_FILE_TEMPLATE.format(f"{key[0]}_{key[1]}")
+        try:
+            fitted_duration = fit_or_shorten_line(
+                tasks_df, row_index, line_index, output_file,
+                target_duration, speed_factor, allow_overrun=False,
+            )
+        except AudioFitTooFastError as exc:
+            # A short or unshrinkable line can leave room for another line to help.
+            # A failed refit may still have regenerated its WAV, so measure it again.
+            last_error = exc
+            fitted_duration = get_audio_duration(output_file)
+        durations[key] = fitted_duration
+        audio_duration += fitted_duration - duration
+
+    overrun = audio_duration - available_duration
+    if overrun > SAFE_TIMELINE_OVERRUN_SECONDS + 0.001:
+        raise RuntimeError(
+            f"Cannot fit audio chunk {start_index} to {end_index}: "
+            f"audio takes {audio_duration:.3f}s for a {available_duration:.3f}s window "
+            f"after speed adjustment and text shortening; overrun {overrun:.3f}s "
+            f"exceeds {SAFE_TIMELINE_OVERRUN_SECONDS:.3f}s."
+        ) from last_error
+    if overrun > 0.001:
+        rprint(f"[yellow]Keeping {overrun:.3f}s overrun for the whole chunk[/yellow]")
+    return keep_gaps
+
+
 def merge_chunks(tasks_df: pd.DataFrame) -> pd.DataFrame:
     """Merge audio chunks and adjust timeline.
 
@@ -493,11 +559,10 @@ def merge_chunks(tasks_df: pd.DataFrame) -> pd.DataFrame:
       Pass 1 (parallel I/O): run all ``adjust_audio_speed`` +
                      ``get_audio_duration`` calls through a ThreadPoolExecutor
                      and cache durations keyed by (number, line_index).
-      Pass 2 (serial timeline): replay the original chunk loop but, instead of
-                     spawning ffmpeg, look up cached durations and accumulate
-                     ``cur_time``.  This step is pure arithmetic so a single
-                     thread is plenty and the resulting timeline is bit-exact
-                     identical to the legacy serial implementation.
+      Pass 2 (serial timeline): rebalance overlong chunks using measured clip
+                     durations, then build every subtitle timestamp from the
+                     final audio. A tolerated overrun reduces the next chunk's
+                     available time instead of creating overlapping subtitles.
     """
     rprint("[bold blue]Starting audio chunks processing...[/bold blue]")
     accept = load_key("speed_factor.accept")
@@ -578,7 +643,8 @@ def merge_chunks(tasks_df: pd.DataFrame) -> pd.DataFrame:
                     durations[key] = ad_dur
                     progress.advance(task)
 
-    # ── Pass 2: serial timeline accumulation (dict lookups + arithmetic) ────
+    # ── Pass 2: fit whole chunks, then build the final timeline ─────────────
+    previous_end_time = 0.0
     for plan in chunk_plans:
         chunk_start = plan['start_idx']
         index = plan['end_idx']
@@ -587,13 +653,17 @@ def merge_chunks(tasks_df: pd.DataFrame) -> pd.DataFrame:
         keep_gaps = plan['keep_gaps']
 
         # Step1: Start processing new timeline
-        chunk_start_time = parse_df_srt_time(chunk_df.iloc[0]['start_time'])
+        chunk_start_time = max(parse_df_srt_time(chunk_df.iloc[0]['start_time']), previous_end_time)
         chunk_end_time = parse_df_srt_time(chunk_df.iloc[-1]['end_time']) + chunk_df.iloc[-1]['tolerance']  # 加上tolerance才是这一块的结束
+        keep_gaps = fit_chunk_audio(
+            tasks_df, chunk_start, index, durations,
+            chunk_end_time - chunk_start_time, speed_factor, keep_gaps,
+        )
         cur_time = chunk_start_time
         for i, row in chunk_df.iterrows():
             # If i is not 0, which is not the first row of the chunk, cur_time needs to be added with the gap of the previous row, remember to divide by speed_factor
             if i != 0 and keep_gaps:
-                cur_time += chunk_df.iloc[i - 1]['gap'] / speed_factor
+                cur_time += max(0.0, chunk_df.iloc[i - 1]['gap']) / speed_factor
             new_sub_times = []
             number = row['number']
             lines = parse_lines_value(row['lines'])
@@ -608,34 +678,7 @@ def merge_chunks(tasks_df: pd.DataFrame) -> pd.DataFrame:
             # Step4: Choose emoji based on speed_factor and accept comparison
             emoji = "FAST" if speed_factor <= accept else "Warning:"
             rprint(f"[cyan]{emoji} Processed chunk {chunk_start} to {index} with speed factor {speed_factor}[/cyan]")
-        # Step5: Check if the last row exceeds the range
-        if cur_time > chunk_end_time:
-            time_diff = cur_time - chunk_end_time
-            last_number = tasks_df.iloc[index]['number']
-            last_lines = parse_lines_value(tasks_df.iloc[index]['lines'])
-            last_line_index = len(last_lines) - 1
-            last_file = OUTPUT_FILE_TEMPLATE.format(f"{last_number}_{last_line_index}")
-
-            audio = AudioSegment.from_wav(last_file)
-            original_duration = len(audio) / 1000
-            target_duration = original_duration - time_diff
-            rprint(
-                f"[yellow]Warning: Chunk {chunk_start} to {index} exceeds by "
-                f"{time_diff:.3f}s, fitting last audio with speed-up[/yellow]"
-            )
-            final_duration = fit_or_shorten_line(
-                tasks_df,
-                index,
-                last_line_index,
-                last_file,
-                target_duration,
-                speed_factor,
-            )
-
-            # Update the last timestamp
-            last_times = tasks_df.at[index, 'new_sub_times']
-            last_times[-1][1] = last_times[-1][0] + final_duration
-            tasks_df.at[index, 'new_sub_times'] = last_times
+        previous_end_time = cur_time
 
     rprint("[bold green]OK: Audio chunks processing completed![/bold green]")
     return tasks_df

@@ -151,5 +151,21 @@
     "Download translated subtitle": "Download translated subtitle",
     "Download dubbed audio": "Download dubbed audio",
     "Download dubbed subtitle": "Download dubbed subtitle",
-    "Standalone subtitles and audio are ready in the output folder.": "Standalone subtitles and audio are ready in the output folder."
+    "Standalone subtitles and audio are ready in the output folder.": "Standalone subtitles and audio are ready in the output folder.",
+    "Step timings": "Step timings",
+    "Timings will appear here when a new task starts. Earlier work cannot be timed retroactively.": "Timings will appear here when a new task starts. Earlier work cannot be timed retroactively.",
+    "Total processing time": "Total processing time",
+    "Source duration": "Source duration",
+    "Processing time / source duration": "Processing time / source duration",
+    "Stopping...": "Stopping...",
+    "Completed": "Completed",
+    "Recorded": "Recorded",
+    "Step": "Step",
+    "Status": "Status",
+    "Elapsed": "Elapsed",
+    "Share": "Share",
+    "Runs": "Runs",
+    "Step times include retries; waiting between steps is excluded. Times use m:ss or h:mm:ss.": "Step times include retries; waiting between steps is excluded. Times use m:ss or h:mm:ss.",
+    "Download timing log": "Download timing log",
+    "Error details": "Error details"
 }

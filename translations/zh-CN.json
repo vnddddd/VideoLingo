@@ -151,5 +151,21 @@
     "Download translated subtitle": "下载翻译字幕",
     "Download dubbed audio": "下载配音音频",
     "Download dubbed subtitle": "下载配音字幕",
-    "Standalone subtitles and audio are ready in the output folder.": "独立字幕和配音音频已生成，可在 output 文件夹中查看。"
+    "Standalone subtitles and audio are ready in the output folder.": "独立字幕和配音音频已生成，可在 output 文件夹中查看。",
+    "Step timings": "耗时统计",
+    "Timings will appear here when a new task starts. Earlier work cannot be timed retroactively.": "开始新任务后，这里会显示各步骤耗时。此前未记录的耗时无法补算。",
+    "Total processing time": "累计处理耗时",
+    "Source duration": "原始音视频时长",
+    "Processing time / source duration": "处理耗时 / 音视频时长",
+    "Stopping...": "正在停止…",
+    "Completed": "已完成",
+    "Recorded": "已记录",
+    "Step": "步骤",
+    "Status": "状态",
+    "Elapsed": "耗时",
+    "Share": "占比",
+    "Runs": "执行次数",
+    "Step times include retries; waiting between steps is excluded. Times use m:ss or h:mm:ss.": "耗时包含重试，不包含步骤之间的等待时间；格式为 分:秒 或 时:分:秒。",
+    "Download timing log": "下载耗时日志",
+    "Error details": "错误详情"
 }

@@ -2,6 +2,7 @@ import streamlit as st
 import os, sys, time
 from core.st_utils.imports_and_utils import *
 from core.st_utils.task_runner import StopTask, TaskRunner
+from core.st_utils.timing_panel import render_timing_panel
 from core.st_utils.speaker_picker import render_speaker_picker_if_pending
 from core import *
 from core import _3_speaker_preview as _speaker_preview
@@ -65,7 +66,7 @@ def _dubbing_outputs_complete() -> bool:
 def _steps_markdown(steps) -> str:
     """Render the actual pipeline steps so skipped video stages are not shown."""
     return "<br>".join(
-        f"{index}. {label}" for index, (label, _func) in enumerate(steps, start=1)
+        f"{index}. {label}" for index, (_alias, label, _func) in enumerate(steps, start=1)
     )
 
 
@@ -217,20 +218,26 @@ def _task_control_panel(runner_key: str):
 
     elif runner.state == "error":
         st.error(f"❌ {t('Task error')}: {runner.error_msg}")
+        if getattr(runner, "error_details", ""):
+            with st.expander(t("Error details")):
+                st.code(runner.error_details, language="text")
         if st.button(t("OK"), key=f"{runner_key}_ack_error", use_container_width=True):
             runner.reset()
             st.rerun(scope="app")
+
+    render_timing_panel(runner, runner_key)
 
 
 # ─── Translation and dubbing ───
 
 
 def _get_text_steps():
-    """Return subtitle translation steps as (label, callable) pairs."""
+    """Return subtitle steps with stable aliases for timing across retries."""
     steps = [
-        (t("WhisperX word-level transcription"), _2_asr.transcribe),
-        (t("Speaker preview for multi-speaker picker"), _speaker_preview_inproc_step),
+        ("asr", t("WhisperX word-level transcription"), _2_asr.transcribe),
+        ("speaker-preview", t("Speaker preview for multi-speaker picker"), _speaker_preview_inproc_step),
         (
+            "split",
             t("Sentence segmentation using NLP and LLM"),
             lambda: (
                 _3_1_split_nlp.split_by_spacy(),
@@ -238,20 +245,21 @@ def _get_text_steps():
             ),
         ),
         (
+            "translate",
             t("Summarization and multi-step translation"),
             lambda: (_4_1_summarize.get_summary(), _4_2_translate.translate_all()),
         ),
         (
+            "subtitles",
             t("Cutting and aligning long subtitles"),
-            lambda: (
-                _5_split_sub.split_for_sub_main(),
-                _6_gen_sub.align_timestamp_main(),
-            ),
+            _5_split_sub.split_for_sub_main,
         ),
+        ("timeline", t("Generating timeline and subtitles"), _6_gen_sub.align_timestamp_main),
     ]
     if _should_render_video():
         steps.append(
             (
+                "subtitle-video",
                 t("Merging subtitles into the video"),
                 _7_sub_into_vid.merge_subtitles_to_video,
             )
@@ -260,22 +268,23 @@ def _get_text_steps():
 
 
 def _get_audio_steps():
-    """Return dubbing steps as (label, callable) pairs."""
+    """Return dubbing steps with separate timings for TTS, merge, and render."""
     steps = [
         (
+            "audio-tasks",
             t("Generate audio tasks and chunks"),
             lambda: (
                 _8_1_audio_task.gen_audio_task_main(),
                 _8_2_dub_chunks.gen_dub_chunks(),
             ),
         ),
-        (t("Extract reference audio"), _9_refer_audio.extract_refer_audio_main),
-        (t("Generate and merge audio files"), _10_gen_audio.gen_audio),
-        (t("Merge full audio"), _11_merge_audio.merge_full_audio),
-        (t("Normalize final dubbed audio"), _11_merge_audio.normalize_dub_audio),
+        ("reference-audio", t("Extract reference audio"), _9_refer_audio.extract_refer_audio_main),
+        ("tts", t("Generate and merge audio files"), _10_gen_audio.gen_audio),
+        ("audio-merge", t("Merge full audio"), _11_merge_audio.merge_full_audio),
+        ("audio-normalize", t("Normalize final dubbed audio"), _11_merge_audio.normalize_dub_audio),
     ]
     if _should_render_video():
-        steps.append((t("Merge final audio into video"), _12_dub_to_vid.merge_video_audio))
+        steps.append(("dub-video", t("Merge final audio into video"), _12_dub_to_vid.merge_video_audio))
     return steps
 
 
@@ -293,11 +302,11 @@ def _get_translation_dubbing_steps():
         if subtitle_ready and raw_dub_ready:
             if not os.path.exists(DUB_AUDIO):
                 steps.append(
-                    (t("Normalize final dubbed audio"), _11_merge_audio.normalize_dub_audio)
+                    ("audio-normalize", t("Normalize final dubbed audio"), _11_merge_audio.normalize_dub_audio)
                 )
             if _should_render_video() and not os.path.exists(DUB_VIDEO):
                 steps.append(
-                    (t("Merge final audio into video"), _12_dub_to_vid.merge_video_audio)
+                    ("dub-video", t("Merge final audio into video"), _12_dub_to_vid.merge_video_audio)
                 )
         else:
             steps.extend(_get_audio_steps())
@@ -380,12 +389,14 @@ def translation_dubbing_section():
 
         if runner.is_active or runner.is_done:
             _task_control_panel("_translation_runner")
-        elif steps:
-            if st.button(
-                t("Start Translation and Dubbing"),
-                key="translation_dubbing_button",
-            ):
-                _kickoff("_translation_runner", _get_translation_dubbing_steps)
+        else:
+            if steps:
+                if st.button(
+                    t("Start Translation and Dubbing"),
+                    key="translation_dubbing_button",
+                ):
+                    _kickoff("_translation_runner", _get_translation_dubbing_steps)
+            render_timing_panel(runner, "_translation_runner")
 
         subtitle_ready = _render_subtitle_outputs()
         audio_ready = _render_dubbing_outputs()
@@ -429,6 +440,7 @@ def main():
     # confirm_picks() clears the pending flag; users then press the start
     # button again to resume the pipeline.
     if render_speaker_picker_if_pending():
+        render_timing_panel(TaskRunner.get(st.session_state, "_translation_runner"), "_translation_runner")
         return
     _resume_after_picker_if_needed()
     translation_dubbing_section()

@@ -1,2 +1,7 @@
 [server]
 maxUploadSize = 4096
+
+[runner]
+# Avoid a full-heap collection after every live-panel refresh. Python's normal
+# automatic garbage collection remains enabled for background NLP/TTS work.
+postScriptGC = false

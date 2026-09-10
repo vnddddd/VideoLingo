@@ -1,6 +1,7 @@
 import spacy
 from spacy.cli import download
 from core.utils import rprint, load_key, except_handler
+from core.utils.step_diagnostics import diagnostic_step
 
 SPACY_MODEL_MAP = load_key("spacy_model_map")
 
@@ -16,12 +17,15 @@ def init_nlp():
     model = get_spacy_model(language)
     rprint(f"[blue]⏳ Loading NLP Spacy model: <{model}> ...[/blue]")
     try:
-        nlp = spacy.load(model)
+        with diagnostic_step("nlp.spacy_load", model=model):
+            nlp = spacy.load(model)
     except:
         rprint(f"[yellow]Downloading {model} model...[/yellow]")
         rprint("[yellow]If download failed, please check your network and try again.[/yellow]")
-        download(model)
-        nlp = spacy.load(model)
+        with diagnostic_step("nlp.model_download", model=model):
+            download(model)
+        with diagnostic_step("nlp.spacy_load_after_download", model=model):
+            nlp = spacy.load(model)
     rprint("[green]✅ NLP Spacy model loaded successfully![/green]")
     return nlp
 

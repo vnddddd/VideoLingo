@@ -1,10 +1,7 @@
 """Wall-clock timings for each dubbing pipeline stage.
 
-The two entry points behave differently: the browser bridge runs all nine
-stages inside one `local-stop-before-video` process, while the Streamlit UI
-runs each stage as its own `local-step` subprocess. Timings therefore
-accumulate in a file rather than in memory, so both paths end up with one
-complete record.
+The browser bridge and Streamlit task runner share this record. Timings
+accumulate on disk so completed steps survive page refreshes and retries.
 
 The record lives beside the other pipeline logs, so browser_bridge carries it
 along when it copies work_output/ into a job directory -- which is what makes
@@ -35,6 +32,11 @@ STAGE_NAMES: dict[str, tuple[str, str]] = {
     "audio-tasks": ("配音任务与分块", "Audio tasks + chunks"),
     "reference-audio": ("参考音频提取", "Reference audio"),
     "tts-merge": ("TTS 生成与合并", "TTS + merge"),
+    "tts": ("TTS 语音生成", "TTS generation"),
+    "audio-merge": ("完整音频合并", "Full audio merge"),
+    "audio-normalize": ("配音响度均衡", "Audio normalization"),
+    "subtitle-video": ("字幕视频合成", "Subtitle video"),
+    "dub-video": ("配音视频合成", "Dubbed video"),
 }
 
 # The figures worth watching. Splitting and translating are one logical step
@@ -43,7 +45,7 @@ STAGE_NAMES: dict[str, tuple[str, str]] = {
 HEADLINE_GROUPS: list[tuple[tuple[str, str], tuple[str, ...]]] = [
     (("语音识别", "Transcription (ASR)"), ("asr",)),
     (("切分 + 翻译", "Split + translation"), ("split", "translate")),
-    (("TTS 生成 + 合并", "TTS + merge"), ("tts-merge",)),
+    (("TTS 生成 + 合并", "TTS + merge"), ("tts-merge", "tts", "audio-merge")),
 ]
 
 
@@ -61,7 +63,7 @@ def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def _load() -> dict:
+def load_timings() -> dict:
     if not TIMINGS_FILE.exists():
         return {"media": {}, "stages": {}}
     try:
@@ -70,16 +72,22 @@ def _load() -> dict:
     except Exception:
         # A truncated file from an interrupted run must not break the pipeline.
         return {"media": {}, "stages": {}}
-    data.setdefault("media", {})
-    data.setdefault("stages", {})
+    if not isinstance(data, dict):
+        return {"media": {}, "stages": {}}
+    if not isinstance(data.get("media"), dict):
+        data["media"] = {}
+    if not isinstance(data.get("stages"), dict):
+        data["stages"] = {}
     return data
 
 
 def _save(data: dict) -> None:
     TIMINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     data["updated_at"] = _now_iso()
-    with TIMINGS_FILE.open("w", encoding="utf-8") as f:
+    temporary_file = TIMINGS_FILE.with_suffix(".json.tmp")
+    with temporary_file.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    temporary_file.replace(TIMINGS_FILE)
 
 
 def _source_duration() -> float | None:
@@ -102,18 +110,22 @@ def format_duration(seconds: float) -> str:
     return f"{minutes}:{secs:02d}"
 
 
-def record_stage(alias: str, label: str, seconds: float) -> None:
+def record_stage(alias: str, label: str, seconds: float, status: str | None = None) -> None:
     """Add one stage run to the record.
 
     Re-running a stage accumulates its time and bumps `runs` rather than
     overwriting, so a resumed or retried pipeline still reports the real cost.
     """
-    data = _load()
+    data = load_timings()
     entry = data["stages"].get(alias) or {}
     entry["label"] = label
     entry["seconds"] = round(float(entry.get("seconds", 0.0)) + seconds, 3)
     entry["runs"] = int(entry.get("runs", 0)) + 1
     entry["last_finished"] = _now_iso()
+    if status is not None:
+        entry["status"] = status
+    else:
+        entry.pop("status", None)
     data["stages"][alias] = entry
 
     # Resolve the media length once it exists; raw.mp3 is absent on the very
@@ -140,7 +152,7 @@ def timed_stage(alias: str, label: str):
 
 def summary_lines() -> list[str]:
     """Render the bilingual timing report; empty when nothing was recorded."""
-    data = _load()
+    data = load_timings()
     stages: dict = data.get("stages") or {}
     if not stages:
         return []

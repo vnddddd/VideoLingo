@@ -7,6 +7,9 @@ from core.utils import *
 from rich.console import Console
 from rich.table import Table
 from core.utils.models import _3_1_SPLIT_BY_NLP, _3_2_SPLIT_BY_MEANING
+from core.utils.step_diagnostics import (
+    diagnose_stage, diagnostic_step, diagnostic_progress, inherit_diagnostics,
+)
 console = Console()
 
 def tokenize_sentence(sentence, nlp):
@@ -56,10 +59,13 @@ def split_sentence(sentence, num_parts, word_limit=20, index=-1, retry_attempt=0
             return {"status": "error", "message": "Split failed, no [br] found"}
         return {"status": "success", "message": "Split completed"}
     
-    response_data = ask_gpt(split_prompt + " " * retry_attempt, resp_type='json', valid_def=valid_split, log_title='split_by_meaning')
+    with diagnostic_step("llm.request", sentence_index=index, pass_number=retry_attempt + 1,
+                         input_chars=len(sentence), requested_parts=num_parts):
+        response_data = ask_gpt(split_prompt + " " * retry_attempt, resp_type='json', valid_def=valid_split, log_title='split_by_meaning')
     choice = response_data["choice"]
     best_split = response_data[f"split{choice}"]
-    split_points = find_split_positions(sentence, best_split)
+    with diagnostic_step("llm.align_split", sentence_index=index):
+        split_points = find_split_positions(sentence, best_split)
     # split the sentence based on the split points
     for i, split_point in enumerate(split_points):
         if i == 0:
@@ -69,14 +75,15 @@ def split_sentence(sentence, num_parts, word_limit=20, index=-1, retry_attempt=0
             last_part = parts[-1]
             parts[-1] = last_part[:split_point - split_points[i-1]] + '\n' + last_part[split_point - split_points[i-1]:]
             best_split = '\n'.join(parts)
-    if index != -1:
-        console.print(f'[green]✅ Sentence {index} has been successfully split[/green]')
-    table = Table(title="")
-    table.add_column("Type", style="cyan")
-    table.add_column("Sentence")
-    table.add_row("Original", sentence, style="yellow")
-    table.add_row("Split", best_split.replace('\n', ' ||'), style="yellow")
-    console.print(table)
+    with diagnostic_step("llm.console_output", sentence_index=index):
+        if index != -1:
+            console.print(f'[green]✅ Sentence {index} has been successfully split[/green]')
+        table = Table(title="")
+        table.add_column("Type", style="cyan")
+        table.add_column("Sentence")
+        table.add_row("Original", sentence, style="yellow")
+        table.add_row("Split", best_split.replace('\n', ' ||'), style="yellow")
+        console.print(table)
     
     return best_split
 
@@ -84,21 +91,26 @@ def parallel_split_sentences(sentences, max_length, max_workers, nlp, retry_atte
     """Split sentences in parallel using a thread pool."""
     new_sentences = [None] * len(sentences)
     futures = []
+    tracked_split_sentence = inherit_diagnostics(split_sentence)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for index, sentence in enumerate(sentences):
-            # Use tokenizer to split the sentence
-            tokens = tokenize_sentence(sentence, nlp)
-            # print("Tokenization result:", tokens)
-            num_parts = math.ceil(len(tokens) / max_length)
-            if len(tokens) > max_length:
-                future = executor.submit(split_sentence, sentence, num_parts, max_length, index=index, retry_attempt=retry_attempt)
-                futures.append((future, index, num_parts, sentence))
-            else:
-                new_sentences[index] = [sentence]
+        with diagnostic_step("llm.tokenize_and_submit", pass_number=retry_attempt + 1,
+                             sentence_count=len(sentences), max_workers=max_workers):
+            for index, sentence in enumerate(sentences):
+                diagnostic_progress(sentence_index=index)
+                # Use tokenizer to split the sentence
+                tokens = tokenize_sentence(sentence, nlp)
+                # print("Tokenization result:", tokens)
+                num_parts = math.ceil(len(tokens) / max_length)
+                if len(tokens) > max_length:
+                    future = executor.submit(tracked_split_sentence, sentence, num_parts, max_length, index=index, retry_attempt=retry_attempt)
+                    futures.append((future, index, num_parts, sentence))
+                else:
+                    new_sentences[index] = [sentence]
 
         for future, index, num_parts, sentence in futures:
-            split_result = future.result()
+            with diagnostic_step("llm.wait_result", sentence_index=index, pass_number=retry_attempt + 1):
+                split_result = future.result()
             if split_result:
                 split_lines = split_result.strip().split('\n')
                 new_sentences[index] = [line.strip() for line in split_lines]
@@ -107,22 +119,28 @@ def parallel_split_sentences(sentences, max_length, max_workers, nlp, retry_atte
 
     return [sentence for sublist in new_sentences for sentence in sublist]
 
+@diagnose_stage("llm")
 @check_file_exists(_3_2_SPLIT_BY_MEANING)
 def split_sentences_by_meaning():
     """The main function to split sentences by meaning."""
     # read input sentences
-    with open(_3_1_SPLIT_BY_NLP, 'r', encoding='utf-8') as f:
-        sentences = [line.strip() for line in f.readlines()]
+    with diagnostic_step("llm.read_nlp_result"):
+        with open(_3_1_SPLIT_BY_NLP, 'r', encoding='utf-8') as f:
+            sentences = [line.strip() for line in f.readlines()]
 
-    nlp = init_nlp()
+    with diagnostic_step("llm.model_init"):
+        nlp = init_nlp()
     # 🔄 process sentences multiple times to ensure all are split
     for retry_attempt in range(3):
-        sentences = parallel_split_sentences(sentences, max_length=load_key("max_split_length"), max_workers=load_positive_int("api.max_workers", fallback_key="max_workers", default=1), nlp=nlp, retry_attempt=retry_attempt)
+        with diagnostic_step("llm.pass", pass_number=retry_attempt + 1, sentence_count=len(sentences)):
+            sentences = parallel_split_sentences(sentences, max_length=load_key("max_split_length"), max_workers=load_positive_int("api.max_workers", fallback_key="max_workers", default=1), nlp=nlp, retry_attempt=retry_attempt)
 
     # 💾 save results
-    with open(_3_2_SPLIT_BY_MEANING, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(sentences))
-    console.print('[green]✅ All sentences have been successfully split![/green]')
+    with diagnostic_step("llm.write_result"):
+        with open(_3_2_SPLIT_BY_MEANING, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(sentences))
+    with diagnostic_step("llm.completion_output"):
+        console.print('[green]✅ All sentences have been successfully split![/green]')
 
 if __name__ == '__main__':
     # print(split_sentence('Which makes no sense to the... average guy who always pushes the character creation slider all the way to the right.', 2, 22))

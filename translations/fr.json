@@ -151,5 +151,21 @@
     "Download translated subtitle": "Télécharger les sous-titres traduits",
     "Download dubbed audio": "Télécharger l'audio doublé",
     "Download dubbed subtitle": "Télécharger les sous-titres du doublage",
-    "Standalone subtitles and audio are ready in the output folder.": "Les sous-titres et l'audio séparés sont disponibles dans le dossier output."
+    "Standalone subtitles and audio are ready in the output folder.": "Les sous-titres et l'audio séparés sont disponibles dans le dossier output.",
+    "Step timings": "Temps par étape",
+    "Timings will appear here when a new task starts. Earlier work cannot be timed retroactively.": "Les temps apparaîtront au lancement d'une nouvelle tâche. Les temps précédents non enregistrés ne peuvent pas être récupérés.",
+    "Total processing time": "Temps total de traitement",
+    "Source duration": "Durée du contenu original",
+    "Processing time / source duration": "Temps de traitement / durée originale",
+    "Stopping...": "Arrêt en cours…",
+    "Completed": "Terminé",
+    "Recorded": "Enregistré",
+    "Step": "Étape",
+    "Status": "État",
+    "Elapsed": "Temps",
+    "Share": "Part",
+    "Runs": "Exécutions",
+    "Step times include retries; waiting between steps is excluded. Times use m:ss or h:mm:ss.": "Les temps incluent les nouvelles tentatives, mais excluent l'attente entre les étapes. Format : m:ss ou h:mm:ss.",
+    "Download timing log": "Télécharger le journal des temps",
+    "Error details": "Détails de l’erreur"
 }

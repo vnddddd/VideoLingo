@@ -1,4 +1,5 @@
 import os
+from copy import deepcopy
 from ruamel.yaml import YAML
 import shutil
 import threading
@@ -6,6 +7,7 @@ import threading
 CONFIG_PATH = 'config.yaml'
 CONFIG_EXAMPLE_PATH = 'config.example.yaml'
 lock = threading.Lock()
+_config_cache = None
 
 yaml = YAML()
 yaml.preserve_quotes = True
@@ -25,10 +27,21 @@ def ensure_config_file():
     shutil.copy2(CONFIG_EXAMPLE_PATH, CONFIG_PATH)
 
 def load_key(key):
+    """Read a config snapshot, reloading when its path or file metadata changes."""
+    global _config_cache
     with lock:
         ensure_config_file()
-        with open(CONFIG_PATH, 'r', encoding='utf-8') as file:
-            data = yaml.load(file)
+        path = os.path.abspath(CONFIG_PATH)
+        stat = os.stat(path)
+        signature = (path, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size, stat.st_ino)
+        if _config_cache is None or _config_cache[0] != signature:
+            # Never serve stale data after a failed reload. Record the signature
+            # from before reading so a concurrent external edit is noticed next time.
+            _config_cache = None
+            with open(path, 'r', encoding='utf-8') as file:
+                data = yaml.load(file)
+            _config_cache = (signature, data)
+        data = _config_cache[1]
 
     keys = key.split('.')
     value = data
@@ -37,9 +50,12 @@ def load_key(key):
             value = value[k]
         else:
             raise KeyError(f"Key '{k}' not found in configuration")
-    return value
+    # Callers previously got a fresh YAML object on every read. Keep mutations
+    # local to the caller, including nested mappings/lists and YAML aliases.
+    return deepcopy(value)
 
 def update_key(key, new_value):
+    global _config_cache
     with lock:
         ensure_config_file()
         with open(CONFIG_PATH, 'r', encoding='utf-8') as file:
@@ -55,6 +71,8 @@ def update_key(key, new_value):
 
         if isinstance(current, dict) and keys[-1] in current:
             current[keys[-1]] = new_value
+            # Also invalidate if opening/writing the file fails partway through.
+            _config_cache = None
             with open(CONFIG_PATH, 'w', encoding='utf-8') as file:
                 yaml.dump(data, file)
             return True

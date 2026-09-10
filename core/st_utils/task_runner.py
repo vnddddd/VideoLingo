@@ -3,7 +3,7 @@ Background task runner for Streamlit with pause/resume/stop control.
 
 Usage:
     runner = TaskRunner.get(st.session_state)
-    runner.start(steps)  # list of (label, callable) tuples
+    runner.start(steps)  # (stage_alias, label, callable), or untimed (label, callable)
     runner.pause() / runner.resume() / runner.stop()
     runner.state  # "idle" | "running" | "paused" | "stopped" | "completed" | "error"
 """
@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import threading
 import time
+import traceback
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Callable
 
 
@@ -40,6 +42,7 @@ class TaskRunner:
     total_steps: int = 0
     current_label: str = ""
     error_msg: str = ""
+    error_details: str = ""
     logs: list[str] = field(default_factory=list)
     max_log_lines: int = 500
 
@@ -50,6 +53,8 @@ class TaskRunner:
     _steps: list = field(default_factory=list)
     _stop_callbacks: list[Callable[[], None]] = field(default_factory=list)
     _stop_callbacks_lock: threading.Lock = field(default_factory=threading.Lock)
+    _timing_lock: threading.Lock = field(default_factory=threading.Lock)
+    _current_timing: tuple[str, str, float] | None = None
 
     def __post_init__(self):
         self._pause_event.set()  # not paused initially
@@ -64,13 +69,14 @@ class TaskRunner:
 
     # ------ Control API ------
 
-    def start(self, steps: list[tuple[str, Callable]]):
+    def start(self, steps: list):
         """Start executing steps in a background thread.
 
         Args:
-            steps: list of (label, callable) — each callable takes no args.
+            steps: (stage_alias, label, callable) tuples for persisted timing,
+                or (label, callable) tuples for untimed tasks.
         """
-        if self.state == "running" or self.state == "paused":
+        if self.is_active or (self._thread is not None and self._thread.is_alive()):
             return  # already running
 
         self._steps = steps
@@ -78,6 +84,7 @@ class TaskRunner:
         self.current_step = -1
         self.current_label = ""
         self.error_msg = ""
+        self.error_details = ""
         self.logs = []
         self.state = "running"
 
@@ -138,6 +145,7 @@ class TaskRunner:
             self.total_steps = 0
             self.current_label = ""
             self.error_msg = ""
+            self.error_details = ""
             self.logs = []
             self._steps = []
 
@@ -168,12 +176,57 @@ class TaskRunner:
             return 0.0
         return min((self.current_step + 1) / self.total_steps, 1.0)
 
+    def timing_snapshot(self) -> dict:
+        """Combine saved steps with the live duration without counting it twice."""
+        from core.utils.stage_timer import load_timings
+
+        with self._timing_lock:
+            data = load_timings()
+            if self._current_timing is not None:
+                alias, label, started = self._current_timing
+                entry = data["stages"].setdefault(alias, {})
+                entry["label"] = label
+                entry["seconds"] = float(entry.get("seconds", 0)) + time.monotonic() - started
+                entry["runs"] = int(entry.get("runs", 0)) + 1
+                entry["status"] = "stopping" if self.stop_requested else "running"
+            return data
+
+    def _run_timed(self, alias: str, label: str, func: Callable):
+        """Persist elapsed work on success, failure, or a cooperative stop."""
+        from core.utils.stage_timer import format_duration, record_stage
+
+        started = time.monotonic()
+        with self._timing_lock:
+            self._current_timing = (alias, label, started)
+        status = "error"
+        try:
+            func()
+            status = "stopped" if self.stop_requested else "completed"
+        except StopTask:
+            status = "stopped"
+            raise
+        finally:
+            seconds = time.monotonic() - started
+            with self._timing_lock:
+                try:
+                    record_stage(alias, label, seconds, status=status)
+                except Exception as exc:
+                    self.log(f"[WARN] Could not save stage timing: {exc}")
+                finally:
+                    self._current_timing = None
+            self.log(f"[TIME] {label}: {format_duration(seconds)} ({seconds:.3f}s) [{status}]")
+
     # ------ Internal ------
 
     def _run(self):
         """Execute steps sequentially in background thread."""
         try:
-            for i, (label, func) in enumerate(self._steps):
+            for i, step in enumerate(self._steps):
+                if len(step) == 3:
+                    alias, label, func = step
+                else:
+                    label, func = step
+                    alias = None
                 # Check stop before each step
                 if self._stop_event.is_set():
                     self.state = "stopped"
@@ -192,9 +245,16 @@ class TaskRunner:
                 self.log(f"[STEP {i + 1}/{self.total_steps}] {label}")
                 _CURRENT_RUNNER.runner = self
                 try:
-                    func()
+                    if alias is None:
+                        func()
+                    else:
+                        self._run_timed(alias, label, func)
                 finally:
                     _CURRENT_RUNNER.runner = None
+
+            if self.stop_requested:
+                self.state = "stopped"
+                return
 
             self.log("[DONE] Task completed")
             self.state = "completed"
@@ -205,5 +265,17 @@ class TaskRunner:
             self.state = "stopped"
         except Exception as e:
             self.error_msg = str(e)
+            self.error_details = traceback.format_exc()
             self.log(f"[ERROR] {self.error_msg}")
+            self.log(self.error_details)
+            try:
+                from core.utils.stage_timer import TIMINGS_FILE
+
+                error_log = TIMINGS_FILE.with_name("task_errors.log")
+                error_log.parent.mkdir(parents=True, exist_ok=True)
+                with error_log.open("a", encoding="utf-8") as file:
+                    file.write(f"[{datetime.now().isoformat(timespec='seconds')}] {self.current_label}\n")
+                    file.write(self.error_details + "\n")
+            except Exception as log_error:
+                self.log(f"[WARN] Could not save error details: {log_error}")
             self.state = "error"
