@@ -514,6 +514,7 @@ def page_setting():
             "qwen3_tts",
             "soniox_tts",
             "fish_tts",
+            "fish_audio_tts",
             "sf_fish_tts",
             "edge_tts",
             "gpt_sovits",
@@ -810,6 +811,64 @@ def page_setting():
             if fish_tts_character != load_key("fish_tts.character"):
                 update_key("fish_tts.character", fish_tts_character)
                 st.rerun()
+
+        elif select_tts == "fish_audio_tts":
+            config_input(t("Fish Audio API Key"), "fish_audio_tts.api_key")
+
+            fish_audio_models = ["s2.1-pro-free", "s2.1-pro", "s2-pro", "s1"]
+            current_fish_model = load_key("fish_audio_tts.model")
+            selected_fish_model = st.selectbox(
+                t("Fish Audio Model"),
+                options=fish_audio_models,
+                index=fish_audio_models.index(current_fish_model)
+                if current_fish_model in fish_audio_models
+                else 0,
+                help=t(
+                    "s2.1-pro-free is the free tier of S2.1-Pro (same model, no "
+                    "latency guarantee). Switch to s2.1-pro once the account has "
+                    "paid API credit. s1 is paid-only."
+                ),
+            )
+            if selected_fish_model != current_fish_model:
+                update_key("fish_audio_tts.model", selected_fish_model)
+                st.rerun()
+
+            fish_audio_mode_options = {
+                "preset": t("Preset"),
+                "custom": t("Refer_stable"),
+                "dynamic": t("Refer_dynamic"),
+            }
+            current_fish_mode = load_key("fish_audio_tts.mode")
+            selected_fish_mode = st.selectbox(
+                t("Mode Selection"),
+                options=list(fish_audio_mode_options.keys()),
+                format_func=lambda x: fish_audio_mode_options[x],
+                index=list(fish_audio_mode_options.keys()).index(current_fish_mode)
+                if current_fish_mode in fish_audio_mode_options
+                else 1,
+                key="fish_audio_mode_select",
+                help=t(
+                    "Preset uses a voice from the Fish Audio library. "
+                    "Refer_stable (ID clone) uploads the reference once and then "
+                    "reuses the resulting voice id — recommended, it does not "
+                    "re-upload audio for every line. Refer_dynamic (instant clone) "
+                    "re-uploads the reference on every line and can saturate a "
+                    "slow uplink on long videos."
+                ),
+            )
+            if selected_fish_mode != current_fish_mode:
+                update_key("fish_audio_tts.mode", selected_fish_mode)
+                st.rerun()
+
+            if current_fish_mode == "preset":
+                config_input(
+                    t("Fish Audio Voice ID"),
+                    "fish_audio_tts.reference_id",
+                    help=t(
+                        "A voice id from https://fish.audio/discovery — the "
+                        "trailing segment of the voice's share URL."
+                    ),
+                )
 
         elif select_tts == "azure_tts":
             config_input("302ai API", "azure_tts.api_key")

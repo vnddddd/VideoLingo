@@ -175,6 +175,12 @@
               <div class="field"><label>302ai API</label><input data-config-key="fish_tts.api_key" type="password" autocomplete="off"></div>
               <div class="field"><label>Fish TTS Character</label><select data-config-key="fish_tts.character"></select></div>
             </div>
+            <div class="tts-settings" data-tts-panel="fish_audio_tts">
+              <div class="field"><label>Fish Audio API Key</label><input data-config-key="fish_audio_tts.api_key" type="password" autocomplete="off"></div>
+              <div class="field"><label>Fish Audio 模型</label><select data-config-key="fish_audio_tts.model"></select></div>
+              <div class="field"><label>音色模式</label><select data-config-key="fish_audio_tts.mode"></select></div>
+              <div class="field conditional" data-show-when="fish_audio_tts.mode=preset"><label>Fish Audio Voice ID（来自 fish.audio/discovery）</label><input data-config-key="fish_audio_tts.reference_id" type="text"></div>
+            </div>
             <div class="tts-settings" data-tts-panel="edge_tts">
               <div class="field"><label>Edge TTS Voice</label><input data-config-key="edge_tts.voice" type="text"></div>
             </div>
