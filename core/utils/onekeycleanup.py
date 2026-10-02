@@ -2,8 +2,11 @@ import os
 import glob
 from core._1_ytdlp import find_video_files
 import shutil
+from core.utils.output_names import export_dub_outputs
 
 def cleanup(history_dir="history"):
+    # Also support archiving results generated before named exports existed.
+    export_dub_outputs()
     # Get video file name
     try:
         video_file = find_video_files()

@@ -34,6 +34,8 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 # Folders that must exist under output/ for the pipeline to read/write its state.
 LINK_NAMES = ("audio", "log", "gpt_log")
@@ -136,6 +138,11 @@ def backup_dub(project: Path, dry: bool) -> Path | None:
         project / "dub.mp3", project / "dub_loudnorm.mp3", project / "dub.srt",
         project / "output" / "dub.mp3", project / "output" / "dub_loudnorm.mp3",
     ]
+    video = find_video(project)
+    if video is not None:
+        from core.utils.output_names import output_filename
+
+        sources.extend(project / output_filename(name, video) for name in ("dub.mp3", "dub.srt"))
     existing = [p for p in sources if p.exists()]
     if not existing:
         return None
@@ -209,15 +216,14 @@ def clear_dub_artifacts(project: Path, dry: bool) -> None:
 
 
 def collect_outputs(project: Path) -> list[str]:
-    """Move the finished dub beside the video, matching these projects' layout.
-
-    The current pipeline writes output/dub.mp3, output/dub_loudnorm.mp3 and
-    output/dub.srt, but these projects were produced by an older VideoLingo that
-    kept those files in the project root next to the .mp4. Match that, so the
-    batch leaves each folder looking the way it did before.
-    """
+    """Export player sidecars beside the video and retain the pipeline originals."""
     out = project / "output"
     moved: list[str] = []
+    video = find_video(project)
+    if video is not None:
+        from core.utils.output_names import export_dub_outputs
+
+        moved.extend(path.name for path in export_dub_outputs(out, video, project))
     for name in ("dub.mp3", "dub_loudnorm.mp3", "dub.srt"):
         src = out / name
         if not src.is_file():

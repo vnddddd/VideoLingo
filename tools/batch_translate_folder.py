@@ -7,7 +7,7 @@ in output/, this one drives the whole folder.
 For each video (shortest first by default):
   1. copy it into output/ (the pipeline finds its source video there)
   2. run tools/run_full_audio.py  (prep -> pipeline -> loudness normalization)
-  3. archive dub*.mp3/dub.srt/refers/log/gpt_log into a project subfolder
+  3. export video-named audio/subtitles beside the source; archive pipeline data
   4. clear output/ for the next video
 
 It never touches the source videos: they are copied, not moved.
@@ -188,10 +188,15 @@ def main() -> int:
             failed.append(video.name)
             continue
 
-        # 3. archive the results beside the source video
+        # 3. export sidecars next to the original video for player auto-loading.
+        from core.utils.output_names import export_dub_outputs
+
+        export_dub_outputs(OUTPUT, video_file=video, destination_dir=video.parent)
+
+        # Archive the reusable pipeline data in its project folder.
         dest = root / project_dir_name(video)
         dest.mkdir(exist_ok=True)
-        for name in ("dub.mp3", "dub_loudnorm.mp3", "dub.srt"):
+        for name in ("dub.mp3", "dub_loudnorm.mp3", "dub.srt", "trans.srt"):
             src = OUTPUT / name
             if src.exists():
                 shutil.copy2(src, dest / name)

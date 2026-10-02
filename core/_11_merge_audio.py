@@ -7,6 +7,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from rich.console import Console
 from core.utils import *
 from core.utils.loudness import normalize_audio_file
+from core.utils.output_names import export_output_file
 from core.utils.models import *
 console = Console()
 
@@ -110,7 +111,8 @@ def create_srt_subtitle():
             f.write(f"{start_str} --> {end_str}\n")
             f.write(f"{line}\n\n")
     
-    rprint(f"[bold green]OK: Subtitle file created: {DUB_SUB_FILE}[/bold green]")
+    exported_subtitle = export_output_file(DUB_SUB_FILE)
+    rprint(f"[bold green]OK: Subtitle file created: {exported_subtitle}[/bold green]")
 
 
 def normalize_dub_audio():
@@ -125,7 +127,9 @@ def normalize_dub_audio():
         f"[bold green]OK: Dub loudness measured {measured_lufs:.1f} LUFS; "
         f"normalized at {sample_rate} Hz with {audio_filter}[/bold green]"
     )
-    console.print(f"[bold green]Output file: {DUB_NORMALIZED_FILE}[/bold green]")
+    exported_audio = export_output_file(DUB_NORMALIZED_FILE)
+    export_output_file(DUB_SUB_FILE)
+    console.print(f"[bold green]Output file: {exported_audio}[/bold green]")
     return DUB_NORMALIZED_FILE
 
 def merge_full_audio():
@@ -157,7 +161,8 @@ def merge_full_audio():
         merged_audio = merged_audio.set_frame_rate(16000).set_channels(1)
         merged_audio.export(DUB_VOCAL_FILE, format="mp3", parameters=["-b:a", "64k"])
     console.print(f"[bold green]OK: Audio file successfully merged![/bold green]")
-    console.print(f"[bold green]Output file: {DUB_VOCAL_FILE}[/bold green]")
+    exported_audio = export_output_file(DUB_VOCAL_FILE)
+    console.print(f"[bold green]Output file: {exported_audio}[/bold green]")
 
 if __name__ == "__main__":
     merge_full_audio()

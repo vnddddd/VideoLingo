@@ -1,5 +1,4 @@
 import os
-import re
 import shutil
 import subprocess
 from time import sleep
@@ -67,9 +66,10 @@ def download_video_section():
                     shutil.rmtree(OUTPUT_DIR)
                 os.makedirs(OUTPUT_DIR, exist_ok=True)
                 
-                raw_name = uploaded_file.name.replace(' ', '_')
-                name, ext = os.path.splitext(raw_name)
-                clean_name = re.sub(r'[^\w\-_\.]', '', name) + ext.lower()
+                # Keep the original basename so exported subtitles/audio match
+                # the user's video, including spaces, punctuation and Chinese.
+                clean_name = os.path.basename(uploaded_file.name.replace('\\', '/'))
+                _, ext = os.path.splitext(clean_name)
                     
                 with open(os.path.join(OUTPUT_DIR, clean_name), "wb") as f:
                     f.write(uploaded_file.getbuffer())

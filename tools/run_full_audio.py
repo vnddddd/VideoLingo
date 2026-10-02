@@ -101,8 +101,10 @@ def main() -> int:
 
     normalize_dub_audio()
 
+    from core.utils.output_names import export_dub_outputs
+
     print("\n" + "=" * 70)
-    for f in (DUB_FILE, DUB_NORMALIZED_FILE, Path("output/dub.srt")):
+    for f in export_dub_outputs():
         state = f"{f.stat().st_size / 1e6:.1f} MB" if f.exists() else "MISSING"
         print(f"  {str(f):<34} {state}")
     print("=" * 70)

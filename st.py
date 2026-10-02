@@ -4,6 +4,7 @@ from core.st_utils.imports_and_utils import *
 from core.st_utils.task_runner import StopTask, TaskRunner
 from core.st_utils.timing_panel import render_timing_panel
 from core.st_utils.speaker_picker import render_speaker_picker_if_pending
+from core.utils.output_names import output_filename
 from core import *
 from core import _3_speaker_preview as _speaker_preview
 
@@ -79,7 +80,7 @@ def _download_output_file(path: str, label: str, mime: str, key: str) -> bool:
     st.download_button(
         label=label,
         data=data,
-        file_name=os.path.basename(path),
+        file_name=output_filename(path),
         mime=mime,
         key=key,
         use_container_width=True,

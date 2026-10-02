@@ -4,17 +4,26 @@ import io, zipfile
 from core.st_utils.download_video_section import download_video_section
 from core.st_utils.sidebar_setting import page_setting
 from translations.translations import translate as t
+from core.utils.output_names import output_filename
 
 def download_subtitle_zip_button(text: str):
     zip_buffer = io.BytesIO()
     output_dir = "output"
     
+    # Named exports and internal files can refer to the same subtitle.
+    subtitles = {}
+    for file_name in sorted(os.listdir(output_dir)):
+        if file_name.endswith(".srt"):
+            subtitles[output_filename(file_name)] = os.path.join(output_dir, file_name)
+    # Prefer the pipeline originals if an export from an earlier run remains.
+    for file_name in ("dub.srt", "trans.srt"):
+        file_path = os.path.join(output_dir, file_name)
+        if os.path.isfile(file_path):
+            subtitles[output_filename(file_name)] = file_path
     with zipfile.ZipFile(zip_buffer, "w") as zip_file:
-        for file_name in os.listdir(output_dir):
-            if file_name.endswith(".srt"):
-                file_path = os.path.join(output_dir, file_name)
-                with open(file_path, "rb") as file:
-                    zip_file.writestr(file_name, file.read())
+        for file_name, file_path in subtitles.items():
+            with open(file_path, "rb") as file:
+                zip_file.writestr(file_name, file.read())
     
     zip_buffer.seek(0)
     

@@ -1,5 +1,6 @@
 import os
 import shutil
+from core.utils.output_names import output_filename
 
 def delete_dubbing_files():
     files_to_delete = [
@@ -9,6 +10,10 @@ def delete_dubbing_files():
         os.path.join("output", "dub.srt"),
         os.path.join("output", "output_dub.mp4")
     ]
+    for name in ("dub.mp3", "dub.srt"):
+        exported = os.path.join("output", output_filename(name))
+        if exported not in files_to_delete:
+            files_to_delete.append(exported)
     
     for file_path in files_to_delete:
         if os.path.exists(file_path):
