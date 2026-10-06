@@ -678,6 +678,7 @@ function renderSpeakerPicker(jobId, manifest) {
     for (const [value, label] of SPEAKER_MODES) {
       appendOption(modeSelect, value, label);
     }
+    modeSelect.value = "clone";
     row.append(createSpeakerField("配音策略", modeSelect));
 
     const fixedInput = document.createElement("input");
@@ -711,7 +712,7 @@ function renderSpeakerPicker(jobId, manifest) {
     const cloneNote = document.createElement("div");
     cloneNote.className = "speaker-extra speaker-sample";
     cloneNote.dataset.mode = "clone";
-    cloneNote.textContent = "将使用上面的预览音频作为该说话人的克隆参考。";
+    cloneNote.textContent = "使用配音设置中选定的引擎，以该说话人的预览音频作为克隆参考。";
     row.append(cloneNote);
 
     modeSelect.addEventListener("change", () => updateSpeakerRowVisibility(row));

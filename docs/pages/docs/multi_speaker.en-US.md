@@ -12,7 +12,7 @@ three voice modes and common pitfalls.
 |---|---|
 | ASR backend | **Soniox** or **ElevenLabs** (both ship diarization). `whisper_*` / `302_whisperX` are not supported and the UI hard-disables them. |
 | Video length | The whole file is sent to ASR in one shot (no chunking). Soniox accepts ~5 h per request and the free $200 credit covers dozens of hours. |
-| TTS backend | Any supported backend can act as a "fixed voice". Clone mode defaults to **GPT-SoVITS** but SiliconFlow CosyVoice2 / Fish Audio / mimo / F5-TTS are also supported. |
+| TTS backend | Clone mode follows the global `tts_method`, which must support per-speaker cloning, such as Fish Audio or Soniox. |
 
 ---
 
@@ -43,16 +43,21 @@ speaker uses that voice.
 > routed to edge_tts.
 
 ### 3. `clone`
-Upload a reference clip (WAV / MP3, 3-10 s recommended). The pipeline uses Soniox voice
-cloning (or the backend's own voice-clone path) to imitate the timbre.
+Use each speaker's preview clip as the reference for the globally selected TTS
+backend. For Fish Audio, all speakers use the configured model (for example,
+`s2.1-pro-free`) but have separate references and cloned voices. The configured
+`custom` or `dynamic` mode is preserved; an explicit clone choice overrides
+`preset` with `custom`. Unsupported backends report an error.
 
 Clone-capable backends:
-- **soniox_tts** (default) — creates/reuses a cloned voice from ref_wav; clips over 18 s are trimmed
+- **fish_audio_tts** — uses the configured Fish model with a separate reference per speaker
+- **soniox_tts** — creates/reuses a cloned voice from ref_wav; clips over 18 s are trimmed
 - **gpt_sovits**
 - **sf_cosyvoice2** — feeds ref_wav directly, bypassing the `refers/<n>.wav` flow
-- **sf_fishtts** — forces dynamic mode
-- **mimo** — auto-switches to the `mimo-v2.5-tts-voiceclone` model
-- **_302_f5tts** — caches the uploaded URL per ref_wav path (multi-speaker safe)
+- **sf_fish_tts** — forces dynamic mode
+- **mimo_tts** — auto-switches to the `mimo-v2.5-tts-voiceclone` model
+- **f5tts** — caches the uploaded URL per ref_wav path (multi-speaker safe)
+- **indextts2** — uses the speaker's reference audio
 
 ---
 

@@ -11,7 +11,7 @@ VideoLingo 自 v2.x 起支持「同一视频里识别出多个说话人并为每
 |---|---|
 | ASR 后端 | **Soniox** 或 **ElevenLabs**(均带 diarization)。`whisper_*` / `302_whisperX` 不支持,UI 会硬禁用。 |
 | 视频长度 | 整段一次性送 ASR(无切片)。Soniox 单次上限约 5 小时,免费额度 $200 够跑数十小时。 |
-| TTS 后端 | 任意支持的 backend 均可作为「固定音色」。clone 模式默认走 **GPT-SoVITS**,亦支持 SiliconFlow CosyVoice2 / Fish Audio / mimo / F5-TTS。 |
+| TTS 后端 | clone 模式跟随全局 `tts_method`，需选择支持按说话人克隆的引擎，如 Fish Audio、Soniox。 |
 
 ---
 
@@ -23,6 +23,8 @@ VideoLingo 自 v2.x 起支持「同一视频里识别出多个说话人并为每
    - 左侧:该 speaker 的音频试听 + 一段识别文本
    - 右侧:三选一下拉(default / fixed / clone)
 4. 全部确认后点 **Continue**,pipeline 续跑无需重启。
+
+发言少于 5 个词或没有可用音频片段的说话人不会出现在预览列表中。保存时会自动为这些说话人选择全局默认声音，其他说话人的独立音色选择不受影响。
 
 > 💡 关掉 `multi_speaker_enabled` 之后整条 pipeline 行为与改造前**完全等同**,零开销。
 
@@ -38,15 +40,19 @@ VideoLingo 自 v2.x 起支持「同一视频里识别出多个说话人并为每
 > 可跨 backend:全局 tts_method 是 azure,但某 speaker 可单独走 edge_tts。
 
 ### 3. `clone`
-上传一段该 speaker 的参考音频(WAV / MP3,3-10 秒最佳),pipeline 用 Soniox 的 voice clone(或 backend 自带的 voice-clone 通道)模仿。
+使用该说话人的预览音频作为参考，通过全局配音设置选定的引擎克隆。每位说话人使用自己的参考音频。
+
+例如，全局选择 Fish Audio 的 `s2.1-pro-free`，所有人的克隆配音都使用该模型，但分别创建或复用各自的音色。Fish 的 `custom` / `dynamic` 克隆方式也跟随全局设置；全局为 `preset` 时，单独选择克隆的说话人使用 `custom`。不支持克隆的引擎会明确报错。
 
 支持 clone 的 backend:
-- **soniox_tts**(默认)——用 ref_wav 创建/复用云端克隆音色,参考片段超过 18 秒会自动裁剪
+- **fish_audio_tts** —— 跟随全局 Fish 模型，每位说话人使用独立参考音频
+- **soniox_tts** —— 用 ref_wav 创建/复用云端克隆音色,参考片段超过 18 秒会自动裁剪
 - **gpt_sovits**
 - **sf_cosyvoice2** —— 直接喂 ref_wav,绕过 `refers/<n>.wav` 流程
-- **sf_fishtts** —— 强制 dynamic 模式
-- **mimo** —— 自动切到 `mimo-v2.5-tts-voiceclone` 模型
-- **_302_f5tts** —— 多 speaker 时按 ref_wav 路径独立缓存上传 URL
+- **sf_fish_tts** —— 强制 dynamic 模式
+- **mimo_tts** —— 自动切到 `mimo-v2.5-tts-voiceclone` 模型
+- **f5tts** —— 多 speaker 时按 ref_wav 路径独立缓存上传 URL
+- **indextts2** —— 使用该说话人的参考音频
 
 ---
 

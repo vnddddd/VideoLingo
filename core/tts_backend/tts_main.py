@@ -21,6 +21,7 @@ from core.tts_backend.mimo_tts import mimo_tts_for_videolingo
 from core.tts_backend.estimate_duration import init_estimator, estimate_duration
 from core.tts_backend.tts_vad import ensure_non_empty_wav, vad_compact_tts_audio
 from core.utils import *
+from core.utils.speaker_router import UnsupportedCloneBackendError
 
 # --- Bad TTS quality detection ---
 # Catches mid-utterance held vowels / slowdown that blow up the audio duration.
@@ -117,6 +118,9 @@ def tts_main(text, save_as, number, task_df, speaker_id=None, speed=None):
         try:
             from core.utils.speaker_router import resolve_voice_cfg
             voice_cfg = resolve_voice_cfg(speaker_id)
+        except UnsupportedCloneBackendError:
+            # An explicit clone request must not silently become a preset voice.
+            raise
         except Exception as e:  # noqa: BLE001 - never let routing break TTS
             rprint(f"[yellow]🎤 tts_main: speaker_router lookup failed for "
                    f"'{speaker_id}': {e}; falling back to global voice.[/yellow]")

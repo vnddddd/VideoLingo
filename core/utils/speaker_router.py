@@ -61,14 +61,19 @@ _MODE_MIMO_VOICE_DESIGN = "mimo_voicedesign"
 _MODE_CLONE = "clone"
 _MODE_DEFAULT = "default"
 
-# Backend used whenever a speaker is configured for voice cloning:
-# clone -> soniox_tts + spk{i}.wav. soniox_tts resolves an `is_clone` entry by
-# creating (or reusing) a cloned voice from ref_wav, so the reference clip is
-# passed through unchanged.
-_CLONE_BACKEND = "soniox_tts"
+# These backends consume the per-speaker reference instead of a global voice.
+# The selected backend retains control of its model and cloning settings.
+_CLONE_BACKENDS = {
+    "fish_audio_tts", "soniox_tts", "gpt_sovits", "sf_fish_tts",
+    "sf_cosyvoice2", "f5tts", "mimo_tts", "indextts2",
+}
 _QWEN3_BACKEND = "qwen3_tts"
 _MIMO_BACKEND = "mimo_tts"
 _MIMO_VOICE_DESIGN_MODEL = "mimo-v2.5-tts-voicedesign"
+
+
+class UnsupportedCloneBackendError(ValueError):
+    """The selected global backend cannot clone a speaker's reference."""
 
 
 def _safe_load(key: str, default: Any = None) -> Any:
@@ -202,6 +207,13 @@ def resolve_voice_cfg(speaker_id: Optional[str]) -> Optional[Dict[str, Any]]:
         }
 
     if mode == _MODE_CLONE:
+        method = _safe_load("tts_method", None)
+        if method not in _CLONE_BACKENDS:
+            raise UnsupportedCloneBackendError(
+                f"当前配音引擎 {method!r} 不支持按说话人克隆。"
+                "请在配音设置中选择支持克隆的引擎（如 Fish Audio 或 Soniox），"
+                "或更改该说话人的配音策略。"
+            )
         ref = entry.get("ref_wav")
         if not ref or not Path(ref).is_file():
             rprint(
@@ -210,7 +222,7 @@ def resolve_voice_cfg(speaker_id: Optional[str]) -> Optional[Dict[str, Any]]:
             )
             return None
         return {
-            "method": _CLONE_BACKEND,
+            "method": method,
             "voice": None,
             "ref_wav": str(ref),
             "is_clone": True,

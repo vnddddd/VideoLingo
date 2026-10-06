@@ -46,7 +46,7 @@ CONFIRMED_STATE_FILE = PREVIEW_DIR / ".confirmed_voice_map.json"
 PREVIEW_TARGET_SECONDS = 15.0   # accumulate up to this much speech per speaker (user spec: 15s)
 MAX_CLIPS_PER_SPEAKER = 6       # cap clip count to keep the wav simple
 PHRASE_MERGE_GAP_SECONDS = 0.5  # consecutive words within this gap stick together
-MIN_WORDS_PER_SPEAKER = 5       # drop speakers that never speak meaningfully
+MIN_WORDS_PER_SPEAKER = 5       # shorter speakers use the global voice
 MIN_SPEAKERS_TO_TRIGGER = 2     # 1 speaker => single-voice, no preview needed
 
 
@@ -110,14 +110,12 @@ def generate_previews() -> List[Dict]:
     manifest: List[Dict] = []
     for idx, speaker_id in enumerate(speaker_order):
         spk_rows = valid[valid["speaker_id"] == speaker_id].sort_values("start")
-        if len(spk_rows) < MIN_WORDS_PER_SPEAKER:
-            rprint(
-                f"[yellow]  - speaker {speaker_id!r}: only {len(spk_rows)} words, skip[/yellow]"
-            )
-            continue
-        clips = _collect_clips(spk_rows, PREVIEW_TARGET_SECONDS, MAX_CLIPS_PER_SPEAKER)
+        clips = _preview_clips(spk_rows)
         if not clips:
-            rprint(f"[yellow]  - speaker {speaker_id!r}: no usable phrase, skip[/yellow]")
+            rprint(
+                f"[yellow]  - speaker {speaker_id!r}: insufficient words or no usable "
+                f"phrase, use global voice[/yellow]"
+            )
             continue
 
         combined = AudioSegment.silent(duration=0)
@@ -244,11 +242,23 @@ def confirm_picks(speaker_voice_map: Dict[str, Dict]) -> None:
     if not isinstance(speaker_voice_map, dict):
         raise TypeError(f"speaker_voice_map must be dict, got {type(speaker_voice_map).__name__}")
 
+    speaker_voice_map = dict(speaker_voice_map)
     sig = _current_speaker_signature()
     if sig is not None:
         required_speakers = set(sig.get("speaker_ids", []))
         mapped_speakers = {str(k).strip() for k in speaker_voice_map.keys() if str(k).strip()}
         missing = sorted(required_speakers - mapped_speakers)
+        if missing:
+            # The picker only exposes speakers with usable previews. Keep the
+            # full ASR signature, but explicitly use the global voice for those
+            # the user could not select (including already-pending old jobs).
+            valid = _current_valid_speaker_rows()
+            if valid is not None:
+                for speaker_id in missing:
+                    rows = valid[valid["speaker_id"] == speaker_id].sort_values("start")
+                    if not rows.empty and not _preview_clips(rows):
+                        speaker_voice_map[speaker_id] = {"mode": "default"}
+            missing = [sid for sid in missing if sid not in speaker_voice_map]
         if missing:
             raise ValueError(f"speaker_voice_map missing current speaker(s): {missing}")
 
@@ -436,6 +446,13 @@ def _stable_speaker_order(valid: pd.DataFrame) -> List[str]:
     """Order speakers by first-appearance time (deterministic UI labelling)."""
     firsts = valid.groupby("speaker_id")["start"].min().sort_values()
     return list(firsts.index)
+
+
+def _preview_clips(spk_rows: pd.DataFrame) -> List[Tuple[float, float, str]]:
+    """Shared eligibility rule for preview generation and pick confirmation."""
+    if len(spk_rows) < MIN_WORDS_PER_SPEAKER:
+        return []
+    return _collect_clips(spk_rows, PREVIEW_TARGET_SECONDS, MAX_CLIPS_PER_SPEAKER)
 
 
 def _collect_clips(
