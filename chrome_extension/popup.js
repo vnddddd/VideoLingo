@@ -12,6 +12,7 @@ const speakerPickerCountEl = document.getElementById("speakerPickerCount");
 const speakerRowsEl = document.getElementById("speakerRows");
 const speakerContinueButton = document.getElementById("speakerContinueButton");
 const speakerPickerStatusEl = document.getElementById("speakerPickerStatus");
+const autoCloneNoteEl = document.getElementById("autoCloneNote");
 
 let activeTabId = null;
 let refreshTimer = null;
@@ -232,6 +233,63 @@ const KNOWN_MODELS = [
   "gpt-4o-mini",
   "gpt-4o"
 ];
+
+// Backends that clone a speaker's own reference (mirrors the same set in
+// core/utils/speaker_router.py).
+const CLONE_BACKENDS = new Set([
+  "fish_audio_tts", "soniox_tts", "gpt_sovits", "sf_fish_tts",
+  "sf_cosyvoice2", "f5tts", "mimo_tts", "indextts2"
+]);
+
+const CLONE_MODES = new Set(["custom", "dynamic"]);
+
+// Return the model the global dubbing settings would clone with, or "" when
+// cloning is not implied. Keep in sync with speaker_router.global_clone_model.
+function globalCloneModel() {
+  const method = valueForKey("tts_method");
+  if (!CLONE_BACKENDS.has(method)) {
+    return "";
+  }
+
+  const mode = (key, fallback) => String(valueForKey(key) || fallback).trim().toLowerCase();
+  if (method === "fish_audio_tts" && !CLONE_MODES.has(mode("fish_audio_tts.mode", "custom"))) {
+    return "";
+  }
+  if (method === "fish_audio_tts" && String(valueForKey("fish_audio_tts.model") || "").trim() === "s1") {
+    // s1 is paid-only and does not support multi-speaker tagging.
+    return "";
+  }
+  if (method === "sf_fish_tts" && !CLONE_MODES.has(mode("sf_fish_tts.mode", "preset"))) {
+    return "";
+  }
+  if (method === "soniox_tts" && mode("soniox_tts.mode", "preset") !== "clone") {
+    return "";
+  }
+  if (method === "mimo_tts" && String(valueForKey("mimo_tts.model") || "").trim() !== "mimo-v2.5-tts-voiceclone") {
+    return "";
+  }
+
+  const modelKey = {
+    fish_audio_tts: "fish_audio_tts.model",
+    soniox_tts: "soniox_tts.model",
+    mimo_tts: "mimo_tts.model"
+  }[method];
+  const model = modelKey ? String(valueForKey(modelKey) || "").trim() : "";
+  return model || method;
+}
+
+// Explain, before the job starts, whether a speaker picker will appear.
+function updateAutoCloneNote() {
+  const multiSpeaker = valueForKey("multi_speaker_enabled") === true;
+  const model = globalCloneModel();
+  if (!multiSpeaker || !model) {
+    autoCloneNoteEl.classList.add("hidden");
+    autoCloneNoteEl.textContent = "";
+    return;
+  }
+  autoCloneNoteEl.textContent = `已启用克隆模型（${model}）：开启多说话人配音后将自动为每位说话人克隆音色，无需再手动确认，点一次“翻译并配音”即可跑完。`;
+  autoCloneNoteEl.classList.remove("hidden");
+}
 
 const SPEAKER_MODES = [
   ["fixed", "固定音色（填写当前 TTS 支持的 voice）"],
@@ -480,6 +538,8 @@ function updateConditionalVisibility() {
   for (const panel of document.querySelectorAll(".tts-settings")) {
     panel.classList.toggle("active", panel.dataset.ttsPanel === ttsMethod);
   }
+
+  updateAutoCloneNote();
 }
 
 function populateConfig(values) {

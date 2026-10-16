@@ -167,5 +167,6 @@
     "Runs": "执行次数",
     "Step times include retries; waiting between steps is excluded. Times use m:ss or h:mm:ss.": "耗时包含重试，不包含步骤之间的等待时间；格式为 分:秒 或 时:分:秒。",
     "Download timing log": "下载耗时日志",
+    "Clone engine detected: every speaker will be cloned automatically, no per-speaker confirmation needed.": "已启用克隆引擎：将自动为每位说话人克隆音色，无需逐人确认。",
     "Error details": "错误详情"
 }

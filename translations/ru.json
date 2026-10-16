@@ -167,5 +167,6 @@
     "Runs": "Запуски",
     "Step times include retries; waiting between steps is excluded. Times use m:ss or h:mm:ss.": "Время включает повторные попытки, но не ожидание между этапами. Формат: м:сс или ч:мм:сс.",
     "Download timing log": "Скачать журнал времени",
+    "Clone engine detected: every speaker will be cloned automatically, no per-speaker confirmation needed.": "Обнаружен движок клонирования: каждый говорящий будет клонирован автоматически, подтверждение не требуется.",
     "Error details": "Подробности ошибки"
 }

@@ -7,6 +7,12 @@
 # under output/preview/ and drops a .pending flag so the UI knows to ask the
 # user "which voice for which speaker?" before the rest of the pipeline runs.
 #
+# Auto-clone shortcut: when the global dubbing settings already clone
+# (speaker_router.global_clone_model() is truthy), there is nothing left to
+# ask. The map is filled automatically with one `clone` entry per speaker and
+# the pending flag is never raised, so a single "translate and dub" click runs
+# the whole pipeline to the final video without any further confirmation.
+#
 # Idempotent + cheap: re-running just rewrites the wav/txt/manifest. No LLM,
 # no GPU, no network. Pure file I/O.
 #
@@ -29,6 +35,7 @@ from pydub import AudioSegment
 from rich import print as rprint
 
 from core.utils.config_utils import load_key, update_key
+from core.utils.speaker_router import global_clone_model
 from core.utils.models import (
     _2_CLEANED_CHUNKS,
     _RAW_AUDIO_FILE,
@@ -56,9 +63,12 @@ MIN_SPEAKERS_TO_TRIGGER = 2     # 1 speaker => single-voice, no preview needed
 def generate_previews() -> List[Dict]:
     """Generate per-speaker preview wav/txt + manifest after ASR.
 
-    Returns the manifest list (possibly empty). Sets PENDING_FLAG when the
-    UI should prompt the user. Safe to call when multi-speaker is disabled
-    or when ASR produced fewer than 2 speakers - both early-return cleanly.
+    Returns the manifest list (possibly empty). Sets PENDING_FLAG when the UI
+    should prompt the user - unless a global clone model is configured, in
+    which case `auto_clone_picks` fills speaker_voice_map and no flag is set,
+    so the pipeline continues unattended. Safe to call when multi-speaker is
+    disabled or when ASR produced fewer than 2 speakers - both early-return
+    cleanly.
     """
     PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -152,9 +162,19 @@ def generate_previews() -> List[Dict]:
         )
         _write_manifest(manifest)
         _clear_pending()
+        # Still honour the global clone model: clone whichever speakers do have
+        # a usable clip and let the rest fall back to the global voice.
+        auto_clone_picks(manifest)
         return manifest
 
     _write_manifest(manifest)
+
+    # Global clone shortcut: the dubbing engine already clones, so every
+    # speaker can use its own preview clip as the reference. Fill the map and
+    # skip the picker entirely - the pipeline continues on its own.
+    if auto_clone_picks(manifest):
+        return manifest
+
     _set_pending({"speaker_ids": [m["speaker_id"] for m in manifest]})
     rprint(
         f"[bold blue]🎤 Speaker preview ready: {len(manifest)} speakers. "
@@ -163,9 +183,66 @@ def generate_previews() -> List[Dict]:
     return manifest
 
 
+def auto_clone_picks(manifest: Optional[List[Dict]] = None) -> bool:
+    """Clone every speaker with the global model, skipping the picker.
+
+    Returns True when the map was filled. False means the global settings do
+    not imply cloning (explicit preset voice, or a backend that cannot clone),
+    so the caller must keep the normal picker flow.
+    """
+    model = global_clone_model()
+    if not model:
+        return False
+
+    if manifest is None:
+        manifest = read_manifest()
+
+    picks: Dict[str, Dict] = {}
+    for entry in manifest or []:
+        speaker_id = str(entry.get("speaker_id", "")).strip()
+        if not speaker_id:
+            continue
+        picks[speaker_id] = {"mode": "clone", "ref_wav": entry.get("wav") or ""}
+
+    if not picks:
+        return False
+
+    # confirm_picks() also covers speakers that had no usable preview (they
+    # fall back to the global voice) and writes the confirmation sidecar that
+    # keeps is_required() quiet on later runs of the same media.
+    #
+    # It validates the map against the current ASR result. If that ever
+    # disagrees with the manifest, fall back to the picker instead of failing
+    # the run: the manual path is the safe, pre-existing recovery route.
+    try:
+        confirm_picks(picks)
+    except Exception as exc:  # noqa: BLE001 - any validation error means "ask"
+        rprint(
+            f"[yellow]🎤 Auto-clone could not fill speaker_voice_map "
+            f"({exc}); falling back to the speaker picker.[/yellow]"
+        )
+        return False
+
+    rprint(
+        f"[bold green]🎤 Auto-clone: {len(picks)} speaker(s) cloned with "
+        f"{model!r}; speaker picker skipped.[/bold green]"
+    )
+    return True
+
+
 def is_pending() -> bool:
     """True iff the previous run left a preview waiting for user voice picks."""
     return PENDING_FLAG.exists()
+
+
+def clear_pending() -> None:
+    """Drop a stale pending flag without touching the manifest.
+
+    Used when the preview stage is skipped because the current media already
+    has a confirmed map: a leftover flag would otherwise pause the pipeline
+    for a decision the user already made.
+    """
+    _clear_pending()
 
 
 def is_required() -> bool:
@@ -176,6 +253,11 @@ def is_required() -> bool:
     skip the picker.  We skip only when the stored confirmation sidecar matches
     the current `cleaned_chunks.xlsx` speaker signature and covers every
     currently detected speaker.
+
+    Note this answers "must the preview stage run?", not "must the user be
+    asked?".  With a global clone model configured the stage still runs (each
+    speaker needs a reference clip) but `generate_previews` auto-fills the map
+    and never raises the pending flag, so no picker is shown.
     """
     if not bool(load_key("multi_speaker_enabled")):
         return False
@@ -199,6 +281,17 @@ def is_required() -> bool:
         rprint(
             "[blue]🎤 Speaker preview required: current ASR speakers are not "
             "fully covered by speaker_voice_map[/blue]"
+        )
+        return True
+
+    # A global clone model must win over picks made for a different engine
+    # (for example, per-speaker fixed voices confirmed before the user
+    # switched to a clone backend). Re-run the stage so the map is rewritten;
+    # it will not ask the user anything.
+    if global_clone_model() and _map_conflicts_with_global_clone(voice_map):
+        rprint(
+            "[blue]🎤 Speaker preview required: refreshing speaker_voice_map "
+            "for the configured global clone model[/blue]"
         )
         return True
 
@@ -439,6 +532,22 @@ def _write_confirmed_state(payload: Dict) -> None:
     CONFIRMED_STATE_FILE.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
+    )
+
+
+def _map_conflicts_with_global_clone(voice_map: Dict) -> bool:
+    """True when a stored pick pins an explicit non-clone voice.
+
+    'default' does not conflict: it simply means "use the global voice", which
+    is exactly right for a speaker with no usable preview clip. 'fixed' /
+    'qwen3_tts' / 'mimo_voicedesign' are deliberate choices for another engine,
+    so they must be replaced once the global engine is switched to cloning.
+    """
+    conflicting = {"fixed", "qwen3_tts", "mimo_voicedesign"}
+    return any(
+        str(e.get("mode", "")) in conflicting
+        for e in voice_map.values()
+        if isinstance(e, dict)
     )
 
 

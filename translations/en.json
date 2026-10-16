@@ -167,5 +167,6 @@
     "Runs": "Runs",
     "Step times include retries; waiting between steps is excluded. Times use m:ss or h:mm:ss.": "Step times include retries; waiting between steps is excluded. Times use m:ss or h:mm:ss.",
     "Download timing log": "Download timing log",
+    "Clone engine detected: every speaker will be cloned automatically, no per-speaker confirmation needed.": "Clone engine detected: every speaker will be cloned automatically, no per-speaker confirmation needed.",
     "Error details": "Error details"
 }

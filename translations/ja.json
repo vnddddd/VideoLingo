@@ -167,5 +167,6 @@
     "Runs": "実行回数",
     "Step times include retries; waiting between steps is excluded. Times use m:ss or h:mm:ss.": "再試行の時間を含み、ステップ間の待機時間は除きます。形式は 分:秒 または 時:分:秒 です。",
     "Download timing log": "処理時間ログをダウンロード",
+    "Clone engine detected: every speaker will be cloned automatically, no per-speaker confirmation needed.": "クローンエンジンを検出：各話者を自動でクローンするため、個別の確認は不要です。",
     "Error details": "エラーの詳細"
 }

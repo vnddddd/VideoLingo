@@ -167,5 +167,6 @@
     "Runs": "Ejecuciones",
     "Step times include retries; waiting between steps is excluded. Times use m:ss or h:mm:ss.": "Los tiempos incluyen los reintentos y excluyen la espera entre pasos. Formato: m:ss o h:mm:ss.",
     "Download timing log": "Descargar registro de tiempos",
+    "Clone engine detected: every speaker will be cloned automatically, no per-speaker confirmation needed.": "Motor de clonación detectado: cada hablante se clonará automáticamente, sin confirmación individual.",
     "Error details": "Detalles del error"
 }

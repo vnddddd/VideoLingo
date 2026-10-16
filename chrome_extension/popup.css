@@ -278,6 +278,16 @@ textarea {
   margin: 0;
 }
 
+.auto-clone-note {
+  margin: 8px 12px 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #e6f4ea;
+  color: #1e6b34;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .tts-settings {
   display: none;
   padding-bottom: 12px;

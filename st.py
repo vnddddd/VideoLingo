@@ -142,6 +142,8 @@ def _speaker_preview_inproc_step():
     picker UI on the next Streamlit rerun.
     """
     if not _speaker_preview.is_required():
+        # Drop any stale flag: the decision for this media is already settled.
+        _speaker_preview.clear_pending()
         return
     _speaker_preview.generate_previews()
     if _speaker_preview.is_pending():

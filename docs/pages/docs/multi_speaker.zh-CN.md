@@ -19,10 +19,27 @@ VideoLingo 自 v2.x 起支持「同一视频里识别出多个说话人并为每
 
 1. `config.yaml` 把 `multi_speaker_enabled` 改为 `true`(或者在 UI 侧边栏勾选,效果等价)。
 2. ASR 后端选 Soniox 或 ElevenLabs;确保 `soniox_diarize: true`。
-3. 跑到 **Speaker Preview** 阶段,UI 会暂停并列出每个 speaker 的样本片段:
+3. 配音设置里选一个**克隆模型**(支持克隆的引擎)。此时一切自动完成,点一次「翻译并配音」即可跑到最后输出。
+4. 若配音设置选的是**预置音色**(如 Fish/Soniox 的 preset、MiMo 的非克隆模型),则跑到 **Speaker Preview** 阶段会暂停并列出每个 speaker 的样本片段:
    - 左侧:该 speaker 的音频试听 + 一段识别文本
    - 右侧:三选一下拉(default / fixed / clone)
-4. 全部确认后点 **Continue**,pipeline 续跑无需重启。
+   全部确认后点 **Continue**,pipeline 续跑无需重启。
+
+### 自动克隆(免确认)
+
+当全局配音引擎本身就是克隆模式时,每位说话人都用**自己的预览音频做参考**、跟随全局模型克隆,因此没有任何需要用户决定的事情,UI 不再弹窗确认。
+触发条件(与全局设置一致):
+
+| 引擎 | 触发自动克隆的设置 |
+|---|---|
+| `fish_audio_tts` | `mode: custom` 或 `dynamic`(且模型不是仅付费、不支持多说话人的 `s1`) |
+| `soniox_tts` | `mode: clone` |
+| `sf_fish_tts` | `mode: custom` 或 `dynamic` |
+| `mimo_tts` | 模型为 `mimo-v2.5-tts-voiceclone` |
+| `gpt_sovits` / `sf_cosyvoice2` / `f5tts` / `indextts2` | 选中即克隆 |
+
+不支持的引擎(如 edge_tts、qwen3_tts)和预设音色模式仍然保留手动选择。
+仅当说话人不足 5 个词、没有可用音频片段时才会回退到全局音色。
 
 发言少于 5 个词或没有可用音频片段的说话人不会出现在预览列表中。保存时会自动为这些说话人选择全局默认声音，其他说话人的独立音色选择不受影响。
 

@@ -3,6 +3,7 @@ import requests
 from translations.translations import translate as t
 from translations.translations import DISPLAY_LANGUAGES
 from core.utils import *
+from core.utils.speaker_router import global_clone_model
 
 
 def _ensure_demucs_keys():
@@ -384,6 +385,15 @@ def page_setting():
             st.markdown(
                 "<span style='color:#d32f2f;font-size:0.85em'>⚠️ "
                 + t("Current ASR backend does not support diarization; switch to Soniox or ElevenLabs.")
+                + "</span>",
+                unsafe_allow_html=True,
+            )
+        elif multi_speaker_enabled and global_clone_model():
+            # Global clone engine + multi-speaker: no per-speaker confirmation
+            # is needed, so tell the user up front that one click is enough.
+            st.markdown(
+                "<span style='color:#2e7d32;font-size:0.85em'>✅ "
+                + t("Clone engine detected: every speaker will be cloned automatically, no per-speaker confirmation needed.")
                 + "</span>",
                 unsafe_allow_html=True,
             )

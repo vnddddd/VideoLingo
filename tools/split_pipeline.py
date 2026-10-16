@@ -649,6 +649,9 @@ def _text_and_audio_steps() -> list[tuple[str, Callable[[], object]]]:
         """
         _3_speaker_preview = _core_module("_3_speaker_preview")
         if not _3_speaker_preview.is_required():
+            # A flag left over from an older run would pause the pipeline for a
+            # decision that is already settled; never re-prompt for it.
+            _3_speaker_preview.clear_pending()
             print("[SKIP] Speaker preview: multi_speaker_enabled=false or <2 speakers detected.")
             return
         _3_speaker_preview.generate_previews()

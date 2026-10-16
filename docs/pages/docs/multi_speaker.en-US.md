@@ -20,10 +20,30 @@ three voice modes and common pitfalls.
 
 1. Set `multi_speaker_enabled: true` in `config.yaml` (or toggle it from the sidebar — both work).
 2. Pick Soniox or ElevenLabs as ASR backend; make sure `soniox_diarize: true`.
-3. The pipeline pauses at the **Speaker Preview** stage and lists a sample for each speaker:
+3. Select a **clone model** in the dubbing settings. Everything is then automatic: one click on
+   "translate and dub" runs the pipeline through to the final output.
+4. If instead you selected a **preset voice** (Fish/Soniox preset, or a non-clone MiMo model),
+   the pipeline pauses at the **Speaker Preview** stage and lists a sample for each speaker:
    - Left: audio preview + a snippet of recognised text
    - Right: a 3-way dropdown (default / fixed / clone)
-4. Click **Continue** once every speaker is decided. The pipeline resumes — no restart needed.
+   Click **Continue** once every speaker is decided. The pipeline resumes — no restart needed.
+
+### Automatic cloning (no confirmation)
+
+When the global dubbing engine already clones, each speaker uses **its own preview clip** as the
+reference and follows the global model. Nothing is left for the user to decide, so the picker is
+skipped entirely. Triggers match the global settings:
+
+| Engine | Setting that triggers auto-clone |
+|---|---|
+| `fish_audio_tts` | `mode: custom` or `dynamic` (and the model is not the paid-only, non-multi-speaker `s1`) |
+| `soniox_tts` | `mode: clone` |
+| `sf_fish_tts` | `mode: custom` or `dynamic` |
+| `mimo_tts` | model is `mimo-v2.5-tts-voiceclone` |
+| `gpt_sovits` / `sf_cosyvoice2` / `f5tts` / `indextts2` | selecting the engine implies cloning |
+
+Unsupported engines (edge_tts, qwen3_tts, …) and preset modes keep the manual picker.
+A speaker falls back to the global voice only when it has fewer than 5 words or no usable audio.
 
 > 💡 Setting `multi_speaker_enabled` back to `false` makes the entire pipeline behave
 > exactly as before with zero overhead.
