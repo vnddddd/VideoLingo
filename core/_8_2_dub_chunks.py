@@ -1,7 +1,7 @@
 import datetime
 import re
 import pandas as pd
-from core._8_1_audio_task import time_diff_seconds
+from core._8_1_audio_task import clean_dubbing_text, time_diff_seconds
 from core.asr_backend.audio_preprocess import get_audio_duration
 from core.tts_backend.estimate_duration import init_estimator, estimate_duration
 from core.utils import *
@@ -140,8 +140,10 @@ def gen_dub_chunks():
     df = process_cutoffs(df)
 
     rprint("[📝 Reading] Loading transcript files...")
-    content = open(TRANS_SRT, "r", encoding="utf-8").read()
-    ori_content = open(SRC_SRT, "r", encoding="utf-8").read()
+    with open(TRANS_SRT, "r", encoding="utf-8") as file:
+        content = file.read()
+    with open(SRC_SRT, "r", encoding="utf-8") as file:
+        ori_content = file.read()
     
     # Process subtitle content
     content_lines = []
@@ -151,16 +153,14 @@ def gen_dub_chunks():
     for block in content.strip().split('\n\n'):
         lines = [line.strip() for line in block.split('\n') if line.strip()]
         if len(lines) >= 3:
-            text = ' '.join(lines[2:])
-            text = re.sub(r'\([^)]*\)|（[^）]*）', '', text).strip().replace('-', '')
+            text = clean_dubbing_text(' '.join(lines[2:]))
             content_lines.append(text)
             
     # Process source subtitles (same structure)
     for block in ori_content.strip().split('\n\n'):
         lines = [line.strip() for line in block.split('\n') if line.strip()]
         if len(lines) >= 3:
-            text = ' '.join(lines[2:])
-            text = re.sub(r'\([^)]*\)|（[^）]*）', '', text).strip().replace('-', '')
+            text = clean_dubbing_text(' '.join(lines[2:]))
             ori_content_lines.append(text)
 
     # Match processing

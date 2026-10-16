@@ -15,6 +15,12 @@ TRANS_SUBS_FOR_AUDIO_FILE = 'output/audio/trans_subs_for_audio.srt'
 SRC_SUBS_FOR_AUDIO_FILE = 'output/audio/src_subs_for_audio.srt'
 ESTIMATOR = None
 
+def clean_dubbing_text(text: str) -> str:
+    """Keep parenthesized speech/formulas, even when split across subtitles."""
+    # Remove only delimiters, never their contents. Use the same cleanup for
+    # audio tasks and display subtitles so different line breaks still align.
+    return text.translate(str.maketrans('', '', '()（）-')).strip()
+
 def check_len_then_trim(text, duration):
     global ESTIMATOR
     if ESTIMATOR is None:
@@ -96,12 +102,7 @@ def process_srt():
             start_time = datetime.datetime.strptime(start_time, '%H:%M:%S,%f').time()
             end_time = datetime.datetime.strptime(end_time, '%H:%M:%S,%f').time()
             duration = time_diff_seconds(start_time, end_time, datetime.date.today())
-            text = ' '.join(lines[2:])
-            # Remove content within parentheses (including English and Chinese parentheses)
-            text = re.sub(r'\([^)]*\)', '', text).strip()
-            text = re.sub(r'（[^）]*）', '', text).strip()
-            # Remove '-' character, can continue to add illegal characters that cause errors
-            text = text.replace('-', '')
+            text = clean_dubbing_text(' '.join(lines[2:]))
 
             # Add the original text from src_subs_for_audio.srt
             origin = src_subtitles.get(number, '')
