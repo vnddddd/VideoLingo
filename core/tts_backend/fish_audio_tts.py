@@ -198,20 +198,72 @@ def _reference_text_for(ref_path: Path) -> str:
 # Persistent voice models (ID cloning)
 # --------------------------------------------------------------------------- #
 
+# Cached account listing. Every generated line consults the voice list, so
+# paginating it per call would add HTTP round-trips per line. Invalidated
+# whenever this module creates or deletes a model.
+_voice_list_cache: tuple[float, list] | None = None
+_VOICE_LIST_TTL = 300.0
+
+
+def _invalidate_voice_list_cache() -> None:
+    global _voice_list_cache
+    _voice_list_cache = None
+
+
 def list_voice_models(api_key=None) -> list:
-    """Every voice model owned by this account."""
+    """Every voice model owned by this account, following pagination.
+
+    The API caps `page_size` at 100 and reports `has_more`/`total`. A single
+    request used to be enough by accident; once an account owns more than 100
+    models (this one does), the models past the first page became invisible, so
+    a lookup could miss an existing voice and re-create it under a new title.
+
+    The result is cached briefly: this is called once per generated line, and
+    paginating a 100+ model account on every line would add round-trips to every
+    single TTS request. Creates and deletes invalidate the cache immediately.
+    """
+    global _voice_list_cache
+    cached = _voice_list_cache
+    if cached is not None and (time.time() - cached[0]) < _VOICE_LIST_TTL:
+        return list(cached[1])
+
     api_key = api_key or _load_api_key()
-    resp = requests.get(
-        _MODEL_API_URL,
-        headers={"Authorization": f"Bearer {api_key}"},
-        params={"self": "true", "page_size": 100},
-        timeout=load_timeout("tts", 60),
-    )
-    if resp.status_code != 200:
-        raise Exception(
-            f"Fish Audio voice list failed {resp.status_code}: {resp.text[:300]}"
+    page_size = 100
+    collected: list = []
+    seen: set[str] = set()
+    max_pages = 20  # hard stop: this is a voice list, not a data feed
+
+    for _page in range(max_pages):
+        resp = requests.get(
+            _MODEL_API_URL,
+            headers={"Authorization": f"Bearer {api_key}"},
+            params={"self": "true", "page_size": page_size},
+            timeout=load_timeout("tts", 60),
         )
-    return resp.json().get("items") or []
+        if resp.status_code != 200:
+            raise Exception(
+                f"Fish Audio voice list failed {resp.status_code}: {resp.text[:300]}"
+            )
+        payload = resp.json()
+        items = payload.get("items") or []
+        fresh = [m for m in items if str(m.get("_id") or "") not in seen]
+        for model in fresh:
+            seen.add(str(model.get("_id") or ""))
+        collected.extend(fresh)
+
+        # The public endpoint ignores `offset` and always reports
+        # has_more=true, so pagination cannot be driven by those fields.
+        # Stop as soon as a page brings nothing new, or once the reported
+        # total is satisfied. Trusting has_more here would loop forever on
+        # every single TTS line.
+        total = payload.get("total")
+        if not fresh or len(items) < page_size:
+            break
+        if isinstance(total, int) and len(collected) >= total:
+            break
+
+    _voice_list_cache = (time.time(), collected)
+    return list(collected)
 
 
 def delete_voice_model(model_id: str, api_key=None) -> None:
@@ -227,6 +279,7 @@ def delete_voice_model(model_id: str, api_key=None) -> None:
         raise Exception(
             f"Fish Audio voice delete failed {resp.status_code}: {resp.text[:300]}"
         )
+    _invalidate_voice_list_cache()
 
 
 def _looks_like_slot_error(exc: Exception) -> bool:
@@ -257,30 +310,20 @@ def _models_created_by_us(models: list) -> list:
     return sorted(ours, key=lambda m: str(m.get("created_at") or ""))
 
 
-def _title_family(title: str) -> str:
-    """The grouping part of a project model title.
-
-    Titles are `vl_<family>_<index>` where `<family>` identifies the source
-    video and `<index>` the speaker within it (see `_voice_name`). Grouping by
-    family is what makes it safe to prune: every model of the CURRENT video
-    shares one family and is therefore kept together.
-    """
-    title = str(title or "")
-    body = title[len(VOICE_NAME_PREFIX):] if title.startswith(VOICE_NAME_PREFIX) else title
-    return body.rsplit("_", 1)[0] if "_" in body else body
-
-
 def recycle_oldest_voice_model(api_key=None) -> bool:
-    """Delete ONE oldest model from a family other than the current run's.
+    """Delete ONE model this project created, oldest first.
 
-    Never touches the current run's own voices: a multi-speaker run creates one
-    model per speaker and is actively using them, so recycling from the live
-    family would break lines that have not been generated yet.
+    Only used as a last resort when the account is genuinely out of voice slots
+    and a create call has already failed. Voices the user made by hand are never
+    candidates: `_models_created_by_us` filters on the `vl_` prefix.
+
+    A model that the current run is using is still eligible here — the run has
+    already failed to create what it needed, so freeing an old slot is better
+    than aborting the dubbing. Any cached id pointing at the victim is dropped
+    so the next lookup re-creates it if it is needed again.
     """
     api_key = api_key or _load_api_key()
     ours = _models_created_by_us(list_voice_models(api_key))
-    current = _current_family()
-    ours = [m for m in ours if _title_family(str(m.get("title") or "")) != current]
     if not ours:
         return False
     victim = ours[0]
@@ -299,70 +342,44 @@ def recycle_oldest_voice_model(api_key=None) -> bool:
 
 
 def prune_voice_models(api_key=None, keep: int = None) -> int:
-    """Keep at most `keep` *families* (source videos) of voice models.
+    """Report (never delete) voice models above the configured budget.
 
-    `keep` counts VIDEOS, not individual voices. A multi-speaker video clones
-    one model per speaker, so a 6-speaker video legitimately owns 6 models; all
-    of them share a family id and are kept or dropped as a unit. Counting
-    individual models instead would delete voices the current run is about to
-    use — a 6-speaker video could never run with a limit of 3.
+    Automatic deletion is deliberately disabled. The previous implementation
+    grouped models into "families" keyed by a per-video id and evicted whole
+    families. That grouping was unreliable (every video produced the same id)
+    and, once titles became content-addressed, each voice would have counted as
+    its own family — a run with `max_voice_slots: 3` would then have deleted
+    nearly every voice the account owned, including the ones the current run was
+    about to reuse.
 
-    Whole families are evicted, oldest first, until at most `keep` remain. The
-    family of the current run is never evicted. Only `vl_`-prefixed models are
-    candidates, so user-made voices are untouched.
+    Cloned voices are expensive to rebuild and belong to the user's paid account,
+    so this function now only logs. Deletion still happens lazily inside
+    `ensure_cloned_voice`, and only after Fish has actually refused a create for
+    lack of slots — see `recycle_oldest_voice_model`.
 
-    Returns the number of models deleted.
+    Returns 0 always (nothing is deleted here).
     """
     if keep is None:
         keep = int(_load_opt("fish_audio_tts.max_voice_slots", 3) or 3)
     if keep <= 0:
         return 0
 
-    api_key = api_key or _load_api_key()
-    ours = _models_created_by_us(list_voice_models(api_key))  # oldest first
-    if not ours:
+    try:
+        api_key = api_key or _load_api_key()
+        ours = _models_created_by_us(list_voice_models(api_key))
+    except Exception as exc:  # noqa: BLE001 - housekeeping must never break a run
+        rprint(f"[yellow]Fish Audio: voice budget check skipped ({exc})[/yellow]")
         return 0
 
-    # Group into families, preserving oldest-first order of first appearance.
-    families: dict[str, list] = {}
-    for model in ours:
-        families.setdefault(_title_family(str(model.get("title") or "")), []).append(model)
-
-    current = _current_family()
-    # Evictable = every family except the one this run is using, oldest first.
-    evictable = [f for f in families if f != current]
-    excess = len(families) - keep
-    if excess <= 0:
-        return 0
-
-    doomed: list = []
-    for family in evictable[:excess]:
-        doomed.extend(families[family])
-
-    if not doomed:
+    if len(ours) > keep:
         rprint(
-            f"[yellow]Fish Audio: {len(families)} voice families present but the "
-            f"limit is {keep}; keeping the current run's family and leaving the "
-            f"rest (delete unused voices at https://fish.audio/app/my-voices).[/yellow]"
+            f"[yellow]Fish Audio: {len(ours)} cloned voice model(s) on this "
+            f"account, above fish_audio_tts.max_voice_slots={keep}. Nothing is "
+            f"deleted automatically; remove old voices at "
+            f"https://fish.audio/app/my-voices if the account runs out of "
+            f"slots.[/yellow]"
         )
-        return 0
-
-    rprint(
-        f"[cyan]Fish Audio: {len(families)} voice families found, keeping the "
-        f"newest {keep}; removing {len(doomed)} older model(s)[/cyan]"
-    )
-    removed = 0
-    for model in doomed:
-        try:
-            delete_voice_model(model["_id"], api_key)
-            for key, value in list(_clone_cache.items()):
-                if value == model["_id"]:
-                    _clone_cache.pop(key, None)
-            removed += 1
-            rprint(f"[yellow]  removed '{model.get('title')}'[/yellow]")
-        except Exception as exc:  # noqa: BLE001 - pruning must never break a run
-            rprint(f"[yellow]  could not remove '{model.get('title')}': {exc}[/yellow]")
-    return removed
+    return 0
 
 
 def prepare_for_run(api_key=None) -> None:
@@ -420,6 +437,7 @@ def _create_voice_model(name: str, clip: bytes, api_key: str) -> str:
         raise Exception(
             f"Fish Audio voice create failed {resp.status_code}: {resp.text[:400]}"
         )
+    _invalidate_voice_list_cache()
     return resp.json()["_id"]
 
 
@@ -455,60 +473,27 @@ def _wait_until_trained(model_id: str, api_key: str) -> None:
         time.sleep(_CLONE_POLL_INTERVAL)
 
 
-# Family (source video) id for the current process. Assigned once, lazily.
-_run_family: str | None = None
-_run_family_lock = threading.Lock()
-# Speaker counter within the family, so titles read vl_<family>_1, _2, ...
-_speaker_index: int = 0
+# Serialises the "list the account, then create if absent" sequence.
+_name_lock = threading.Lock()
 
 
-def _current_family() -> str:
-    """Stable id for "the video being dubbed right now".
+def _voice_name(clip: bytes) -> str:
+    """Title for a voice model: `vl_<hash of the reference audio>`.
 
-    A multi-speaker run clones one voice per speaker, so pruning by a global
-    count would delete models that the current run is still using. Tagging every
-    model of this run with one shared family id lets pruning treat the whole run
-    as a single unit: either all of its models survive, or (once a later run
-    supersedes it) all of them go.
+    The name is derived from the reference clip itself, so a given title can
+    only ever refer to one voice. That is what makes reuse safe: re-running the
+    same speaker (or a video whose preview clips are rebuilt identically) finds
+    its own model, while a different speaker — even at the same index — never
+    matches it.
 
-    Derived from the output directory when available, so two runs of the same
-    video family share a tag and re-clone nothing.
+    The previous scheme used a per-video "family" id plus a running index, which
+    silently aliased every speaker of every video onto one family, then handed
+    out whatever index happened to be free. Reuse then matched on title alone,
+    so a female speaker could be handed a male speaker's voice from an older run
+    (many separate videos all cloned as `vl_231c37b5_*`).
     """
-    global _run_family
-    if _run_family:
-        return _run_family
-    with _run_family_lock:
-        if _run_family:
-            return _run_family
-        seed = ""
-        try:
-            seed = str(Path("output/audio/refers").resolve())
-        except Exception:
-            seed = ""
-        _run_family = hashlib.md5((seed or "videolingo").encode()).hexdigest()[:8]
-    return _run_family
-
-
-def _voice_name(clip: bytes, api_key: str) -> str:
-    """Title for a new voice model: `vl_<family>_<speakerIndex>`.
-
-    The clip's content hash is deliberately NOT in the name. It hashes the
-    prepared audio, which is identical for every speaker that reuses the same
-    merged reference — that aliasing is what let two different speakers collide
-    on one model before. An explicit per-speaker index keeps them distinct.
-    """
-    global _speaker_index
-    family = _current_family()
-    with _run_family_lock:
-        # Reuse an existing title for this exact family if the server already
-        # has one for a previous identical clip set; otherwise take the next index.
-        existing = [
-            str(m.get("title") or "")
-            for m in list_voice_models(api_key)
-            if _title_family(str(m.get("title") or "")) == family
-        ]
-        _speaker_index = len(existing) + 1
-        return f"{VOICE_NAME_PREFIX}{family}_{_speaker_index}"
+    digest = hashlib.sha256(clip).hexdigest()[:16]
+    return f"{VOICE_NAME_PREFIX}{digest}"
 
 
 def ensure_cloned_voice(ref_wav, api_key=None) -> str:
@@ -537,14 +522,21 @@ def ensure_cloned_voice(ref_wav, api_key=None) -> str:
             return cached
 
         clip = _prepare_reference_clip(ref_path)
-        name = _voice_name(clip, api_key)
+        # Content-addressed: the title can only match a model built from this
+        # very audio, so a match is safe to reuse and a miss cannot collide with
+        # another speaker's voice.
+        name = _voice_name(clip)
 
-        for model in list_voice_models(api_key):
-            if str(model.get("title") or "") == name:
-                _wait_until_trained(model["_id"], api_key)
-                _clone_cache[cache_key] = model["_id"]
-                rprint(f"[cyan]Reusing Fish Audio voice model '{name}'[/cyan]")
-                return model["_id"]
+        with _name_lock:
+            for model in list_voice_models(api_key):
+                if str(model.get("title") or "") == name:
+                    _wait_until_trained(model["_id"], api_key)
+                    _clone_cache[cache_key] = model["_id"]
+                    rprint(
+                        f"[cyan]Reusing Fish Audio voice model '{name}' "
+                        f"for {ref_path.name}[/cyan]"
+                    )
+                    return model["_id"]
 
         rprint(f"[cyan]Creating Fish Audio voice model '{name}' from {ref_path.name}...[/cyan]")
         try:
