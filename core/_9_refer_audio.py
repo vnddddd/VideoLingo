@@ -7,8 +7,12 @@ from core.utils.models import *
 import pandas as pd
 import soundfile as sf
 console = Console()
-from core.asr_backend.demucs_vl import demucs_audio
 from core.utils.models import *
+
+# NOTE: demucs_audio is imported lazily inside extract_refer_audio_main().
+# Importing it here pulls in torch, which costs several seconds and a lot of
+# memory even on the normal path where background separation is disabled and
+# the raw mix is used directly.
 
 def time_to_samples(time_str, sr):
     """Unified time conversion function"""
@@ -29,9 +33,13 @@ def extract_refer_audio_main():
     # torch/CUDA on a machine that may not have a usable GPU, and fall back to
     # the raw mixed audio as the reference source.
     if load_key("demucs"):
+        from core.asr_backend.demucs_vl import demucs_audio
+
         demucs_audio() #!!! in case demucs not run
         audio_source = _VOCAL_AUDIO_FILE
     else:
+        # Default path: no background separation. Modern ASR handles the mix
+        # directly, and the reference clips are sliced from the same audio.
         audio_source = _RAW_AUDIO_FILE
 
     # Skip only when THIS step's own output is already complete. It used to
