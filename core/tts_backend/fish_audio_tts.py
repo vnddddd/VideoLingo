@@ -40,6 +40,7 @@ import requests
 from pydub import AudioSegment
 
 from core.utils import load_key, except_handler, load_timeout, rprint
+from core.utils.models import _AUDIO_REFERS_DIR
 
 _API_URL = "https://api.fish.audio/v1/tts"
 _MODEL_API_URL = "https://api.fish.audio/model"
@@ -208,6 +209,34 @@ def _prepare_reference(ref_wav: Path) -> tuple[bytes, str]:
 def _prepare_reference_clip(ref_wav: Path) -> bytes:
     """Encoded bytes of the reference clip (see `_prepare_reference`)."""
     return _prepare_reference(ref_wav)[0]
+
+
+def _dynamic_reference(voice_cfg, number=None) -> Path:
+    """Pick the clone prompt for one line in dynamic mode.
+
+    Preference order:
+
+    1. A per-speaker reference from the router (multi-speaker mode).
+    2. THIS line's own source audio, refers/{number}.wav. Cloning a sentence
+       from the same sentence's original voice follows every speaker
+       automatically -- no diarization needed, because the prompt already is
+       the voice that spoke it.
+    3. The whole-video long reference, for a line whose clip is missing.
+
+    The per-line clip is what the original project did, and it is only usable
+    again now that current models hold timbre steady from a short prompt.
+    """
+    if voice_cfg and voice_cfg.get("is_clone") and voice_cfg.get("ref_wav"):
+        return Path(voice_cfg["ref_wav"])
+
+    if number is not None:
+        per_line = Path(_AUDIO_REFERS_DIR) / f"{number}.wav"
+        if per_line.exists() and per_line.stat().st_size > 0:
+            return per_line
+
+    from core.utils._long_ref_extractor import ensure_long_ref
+
+    return Path(ensure_long_ref())
 
 
 def _log_dynamic_reference(ref_wav: Path, clip: bytes) -> None:
@@ -667,12 +696,17 @@ def _post(payload: dict, headers: dict, msgpack: bool) -> bytes:
 
 
 @except_handler("Failed to generate audio using Fish Audio TTS", retry=3, delay=1)
-def fish_audio_tts(text, save_as, voice_cfg=None):
+def fish_audio_tts(text, save_as, voice_cfg=None, number=None):
     """Fish Audio Text-to-Speech.
 
     voice_cfg: optional dict from the speaker router. `is_clone + ref_wav`
     selects the configured cloning mode for that speaker's reference clip;
     `voice` overrides the preset `reference_id` for this call.
+
+    number: the subtitle line being voiced. In dynamic mode this selects that
+    line's own source audio (refers/{number}.wav) as the clone prompt, so each
+    sentence is cloned from whoever actually said it and the whole-video
+    reference is only a fallback.
     """
     api_key = _load_api_key()
     model = _load_model()
@@ -691,13 +725,7 @@ def fish_audio_tts(text, save_as, voice_cfg=None):
     if mode == "dynamic":
         # Instant zero-shot cloning: inline the reference audio. MessagePack is
         # mandatory here — JSON cannot carry raw audio bytes.
-        ref_wav = None
-        if voice_cfg and voice_cfg.get("is_clone") and voice_cfg.get("ref_wav"):
-            ref_wav = Path(voice_cfg["ref_wav"])
-        else:
-            from core.utils._long_ref_extractor import ensure_long_ref
-
-            ref_wav = Path(ensure_long_ref())
+        ref_wav = _dynamic_reference(voice_cfg, number)
         if not ref_wav.exists():
             raise ValueError(f"Fish Audio TTS: reference audio not found: {ref_wav}")
 

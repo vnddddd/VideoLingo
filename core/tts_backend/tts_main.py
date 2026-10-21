@@ -161,7 +161,7 @@ def tts_main(text, save_as, number, task_df, speaker_id=None, speed=None):
             elif TTS_METHOD == 'fish_tts':
                 fish_tts(text, save_as, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'fish_audio_tts':
-                fish_audio_tts(text, save_as, voice_cfg=voice_cfg)
+                fish_audio_tts(text, save_as, voice_cfg=voice_cfg, number=number)
             elif TTS_METHOD == 'azure_tts':
                 azure_tts(text, save_as, voice_cfg=voice_cfg)
             elif TTS_METHOD == 'sf_fish_tts':

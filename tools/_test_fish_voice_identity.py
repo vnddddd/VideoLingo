@@ -184,6 +184,44 @@ class CreateLimitTests(unittest.TestCase):
         self.assertIn('No voice model was deleted', message)
 
 
+class DynamicReferenceTests(unittest.TestCase):
+    """Dynamic mode must clone each line from that line's own voice."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__('shutil').rmtree(self.root, ignore_errors=True))
+        self.refers = self.root / 'refers'
+        self.refers.mkdir()
+        for n in (1, 2, 3):
+            (self.refers / f'{n}.wav').write_bytes(b'x' * 32)
+        (self.refers / '_long_ref.wav').write_bytes(b'y' * 32)
+        patcher = patch.object(fish, '_AUDIO_REFERS_DIR', str(self.refers))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_line_uses_its_own_clip(self):
+        got = fish._dynamic_reference(None, 2)
+        self.assertEqual(got.name, '2.wav', 'line 2 did not use its own reference')
+
+    def test_router_override_wins(self):
+        cfg = {'is_clone': True, 'ref_wav': str(self.root / 'spk_1.wav')}
+        got = fish._dynamic_reference(cfg, 2)
+        self.assertEqual(got.name, 'spk_1.wav', 'multi-speaker override was ignored')
+
+    def test_missing_line_falls_back_to_long_ref(self):
+        with patch('core.utils._long_ref_extractor.ensure_long_ref',
+                   return_value=str(self.refers / '_long_ref.wav')):
+            got = fish._dynamic_reference(None, 999)
+        self.assertEqual(got.name, '_long_ref.wav')
+
+    def test_empty_line_clip_falls_back(self):
+        (self.refers / '4.wav').write_bytes(b'')
+        with patch('core.utils._long_ref_extractor.ensure_long_ref',
+                   return_value=str(self.refers / '_long_ref.wav')):
+            got = fish._dynamic_reference(None, 4)
+        self.assertEqual(got.name, '_long_ref.wav', 'a zero-byte clip must not be sent')
+
+
 class Resp:
     def __init__(self, payload):
         self.status_code = 200

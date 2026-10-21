@@ -34,9 +34,17 @@ def extract_refer_audio_main():
     else:
         audio_source = _RAW_AUDIO_FILE
 
-    if os.path.exists(os.path.join(_AUDIO_SEGS_DIR, '1.wav')):
-        rprint(Panel("Audio segments already exist, skipping extraction", title="Info", border_style="blue"))
-        return
+    # Skip only when THIS step's own output is already complete. It used to
+    # test segs/1.wav, which another stage writes, so a resumed run skipped
+    # extraction and left refers/ empty -- every per-sentence-clone backend
+    # then had no {number}.wav to use.
+    if os.path.isdir(_AUDIO_REFERS_DIR):
+        expected = len(pd.read_excel(_8_1_AUDIO_TASK))
+        present = len([f for f in os.listdir(_AUDIO_REFERS_DIR)
+                       if f.endswith('.wav') and not f.startswith('_')])
+        if expected and present >= expected:
+            rprint(Panel("Reference audio already extracted, skipping", title="Info", border_style="blue"))
+            return
 
     # Create output directory
     os.makedirs(_AUDIO_REFERS_DIR, exist_ok=True)
