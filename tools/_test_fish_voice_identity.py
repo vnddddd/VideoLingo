@@ -8,6 +8,7 @@ onto one family and reuse matched on title alone. A female speaker could be
 handed a male speaker's voice from an unrelated, much older run.
 """
 
+import hashlib
 import sys
 import tempfile
 import unittest
@@ -81,9 +82,12 @@ class ClonedVoiceReuseTests(unittest.TestCase):
         def fake_list(api_key=None):
             return list(created.values())
 
+        # ensure_cloned_voice hashes canonical PCM, so stub the (bytes, digest)
+        # pair: the digest is what must differ between speakers.
         with patch.object(fish, '_create_voice_model', side_effect=fake_create), \
              patch.object(fish, 'list_voice_models', side_effect=fake_list), \
-             patch.object(fish, '_prepare_reference_clip', side_effect=lambda p: Path(p).read_bytes()):
+             patch.object(fish, '_prepare_reference',
+                          side_effect=lambda p: (Path(p).read_bytes(), hashlib.sha256(Path(p).read_bytes()).hexdigest()[:16])):
             female_id = fish.ensure_cloned_voice(self.female)
             male_id = fish.ensure_cloned_voice(self.male)
 
@@ -103,7 +107,8 @@ class ClonedVoiceReuseTests(unittest.TestCase):
 
         with patch.object(fish, '_create_voice_model', side_effect=fake_create), \
              patch.object(fish, 'list_voice_models', side_effect=fake_list), \
-             patch.object(fish, '_prepare_reference_clip', side_effect=lambda p: Path(p).read_bytes()):
+             patch.object(fish, '_prepare_reference',
+                          side_effect=lambda p: (Path(p).read_bytes(), hashlib.sha256(Path(p).read_bytes()).hexdigest()[:16])):
             first = fish.ensure_cloned_voice(self.female)
             # A new file, same audio bytes: must resolve to the existing model.
             twin = self.root / 'spk_0_copy.wav'
@@ -128,6 +133,55 @@ class PruneSafetyTests(unittest.TestCase):
             removed = fish.prune_voice_models()
         self.assertEqual(removed, 0)
         self.assertEqual(deleted, [], 'prune deleted user voices')
+
+    def test_recycle_refuses_to_delete(self):
+        """The create-limit is a credit limit; deleting frees nothing."""
+        deleted = []
+        models = [{'_id': 'id-1', 'title': 'vl_old', 'created_at': '2026-01-01'}]
+        with patch.object(fish, '_load_api_key', return_value='key'), \
+             patch.object(fish, 'list_voice_models', return_value=models), \
+             patch.object(fish, 'delete_voice_model', side_effect=lambda *a, **k: deleted.append(a)), \
+             patch.object(fish, 'rprint', lambda *a, **k: None):
+            result = fish.recycle_oldest_voice_model()
+        self.assertFalse(result)
+        self.assertEqual(deleted, [], 'recycle deleted a voice model')
+
+
+class CreateLimitTests(unittest.TestCase):
+    """A full allowance must fail loudly, never delete anything."""
+
+    def test_create_limit_does_not_delete_and_explains_credit(self):
+        import tempfile, io, wave
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        ref = Path(temp.name) / 'spk.wav'
+        buffer = io.BytesIO()
+        with wave.open(buffer, 'wb') as stream:
+            stream.setnchannels(1); stream.setsampwidth(2); stream.setframerate(16000)
+            stream.writeframes(b'\0\0' * 16000)
+        ref.write_bytes(buffer.getvalue())
+        fish._clone_cache.clear()
+        self.addCleanup(fish._clone_cache.clear)
+
+        deleted, errors = [], []
+        limit_error = Exception(
+            'Fish Audio voice create failed 403: {"status":403,"message":'
+            '"API model creation limit reached (102/0). Top up API credit to raise the limit."}',
+        )
+
+        with patch.object(fish, '_load_api_key', return_value='key'), \
+             patch.object(fish, 'list_voice_models', return_value=[]), \
+             patch.object(fish, '_prepare_reference_clip', return_value=b'clip'), \
+             patch.object(fish, '_create_voice_model', side_effect=limit_error), \
+             patch.object(fish, 'delete_voice_model', side_effect=lambda *a, **k: deleted.append(a)), \
+             patch.object(fish, 'rprint', side_effect=lambda *a, **k: errors.append(' '.join(str(x) for x in a))):
+            with self.assertRaises(Exception) as ctx:
+                fish.ensure_cloned_voice(ref)
+
+        self.assertEqual(deleted, [], 'a create failure deleted voice models')
+        message = str(ctx.exception)
+        self.assertIn('API credit', message, 'error must name the real cause')
+        self.assertIn('No voice model was deleted', message)
 
 
 class Resp:

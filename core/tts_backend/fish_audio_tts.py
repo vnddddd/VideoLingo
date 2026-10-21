@@ -66,6 +66,14 @@ _CLONE_POLL_INTERVAL = 3.0
 REF_MAX_SECONDS = 30.0
 PHRASE_GAP_MS = 200
 
+# Dynamic (instant) cloning re-uploads the reference clip on EVERY line, so its
+# size multiplies by the line count: a 30s 16kHz mono wav is ~830 KB, which is
+# ~800 MB for a 1000-line video. Fish accepts mp3 references and decodes them
+# server-side, so sending 64 kbps mono cuts that by ~4x with no audible loss
+# on speech. Set to None to send the original wav bytes.
+REF_ENCODE_FORMAT = "mp3"
+REF_ENCODE_BITRATE = "64k"
+
 # Every voice model this backend creates carries this prefix. Reuse and any
 # future cleanup only ever touch these, so voices a user made by hand in the
 # Fish Audio studio are never touched by us.
@@ -78,6 +86,10 @@ VOICE_NAME_PREFIX = "vl_"
 # `tts_max_workers`) from racing to create the same model.
 _clone_cache: dict = {}
 _clone_lock = threading.Lock()
+
+# Dynamic mode logs the inline reference size once per distinct clip.
+_reference_logged: set = set()
+_reference_log_lock = threading.Lock()
 
 # Values shipped in config.example.yaml; treat as "not configured".
 _PLACEHOLDER_KEYS = {"", "YOUR_API_KEY", "YOUR_FISH_API_KEY", "sk-fish-xxxx"}
@@ -158,8 +170,17 @@ def _select_best_phrases(seg: AudioSegment, limit_ms: int) -> AudioSegment:
     return out
 
 
-def _prepare_reference_clip(ref_wav: Path) -> bytes:
-    """Trim a reference clip to what Fish accepts and return wav bytes."""
+def _prepare_reference(ref_wav: Path) -> tuple[bytes, str]:
+    """Trim a reference clip; return (encoded bytes, content digest).
+
+    The digest is taken over canonical PCM, NOT over the bytes actually sent, so
+    changing REF_ENCODE_FORMAT never renames a voice: a clip cloned yesterday as
+    wav and today as mp3 keeps the same title and is still reused.
+
+    Dynamic cloning re-sends the encoded clip on every line, so it is mp3 by
+    default (see REF_ENCODE_FORMAT). Fish decodes the reference server-side, so
+    that only changes how many bytes travel -- not the voice.
+    """
     seg = AudioSegment.from_file(ref_wav)
     limit_ms = int(REF_MAX_SECONDS * 1000)
     if len(seg) > limit_ms:
@@ -170,9 +191,39 @@ def _prepare_reference_clip(ref_wav: Path) -> bytes:
             f"cloning (cap {REF_MAX_SECONDS:.0f}s)[/yellow]"
         )
         seg = picked
+
+    canonical = seg.set_channels(1).set_frame_rate(16000).set_sample_width(2)
+    canonical_buf = io.BytesIO()
+    canonical.export(canonical_buf, format="wav")
+    digest = hashlib.sha256(canonical_buf.getvalue()).hexdigest()[:16]
+
     buf = io.BytesIO()
-    seg.export(buf, format="wav")
-    return buf.getvalue()
+    if REF_ENCODE_FORMAT == "mp3":
+        canonical.export(buf, format="mp3", bitrate=REF_ENCODE_BITRATE)
+    else:
+        canonical.export(buf, format="wav")
+    return buf.getvalue(), digest
+
+
+def _prepare_reference_clip(ref_wav: Path) -> bytes:
+    """Encoded bytes of the reference clip (see `_prepare_reference`)."""
+    return _prepare_reference(ref_wav)[0]
+
+
+def _log_dynamic_reference(ref_wav: Path, clip: bytes) -> None:
+    """Announce the inline reference once per clip, not once per line.
+
+    A 1000-line video would otherwise print the same line 1000 times.
+    """
+    with _reference_log_lock:
+        if ref_wav in _reference_logged:
+            return
+        _reference_logged.add(ref_wav)
+    rprint(
+        f"[yellow]Fish Audio dynamic mode: inlining {len(clip) / 1024:.0f} KB "
+        f"({REF_ENCODE_FORMAT} {REF_ENCODE_BITRATE}) reference per line for "
+        f"{ref_wav.name}[/yellow]"
+    )
 
 
 def _reference_text_for(ref_path: Path) -> str:
@@ -311,34 +362,30 @@ def _models_created_by_us(models: list) -> list:
 
 
 def recycle_oldest_voice_model(api_key=None) -> bool:
-    """Delete ONE model this project created, oldest first.
+    """Disabled: voice models are never deleted automatically.
 
-    Only used as a last resort when the account is genuinely out of voice slots
-    and a create call has already failed. Voices the user made by hand are never
-    candidates: `_models_created_by_us` filters on the `vl_` prefix.
+    This used to delete the oldest `vl_` model when a create call failed with a
+    slot-like error. That rested on a wrong assumption. Fish answers a full
+    allowance with
 
-    A model that the current run is using is still eligible here — the run has
-    already failed to create what it needed, so freeing an old slot is better
-    than aborting the dubbing. Any cached id pointing at the victim is dropped
-    so the next lookup re-creates it if it is needed again.
+        403 {"message": "API model creation limit reached (N/0).
+             Top up API credit to raise the limit."}
+
+    The limit is tied to API credit, not to how many models exist: as models
+    were removed the reported "N" simply dropped (102 -> 101 -> ... -> 67) while
+    every create still failed. Recycling therefore destroyed 36 of the user's
+    cloned voices and freed no capacity at all.
+
+    A destructive fallback that cannot achieve its goal must not run. Callers
+    now surface a clear error instead; see `ensure_cloned_voice`.
+
+    Returns False always (nothing is deleted).
     """
-    api_key = api_key or _load_api_key()
-    ours = _models_created_by_us(list_voice_models(api_key))
-    if not ours:
-        return False
-    victim = ours[0]
     rprint(
-        f"[yellow]Fish Audio voice slots full; recycling the oldest model this "
-        f"project created: '{victim.get('title')}' "
-        f"(created {victim.get('created_at')})[/yellow]"
+        "[red]Fish Audio: automatic voice recycling is disabled; "
+        "no voice model was deleted.[/red]"
     )
-    delete_voice_model(victim["_id"], api_key)
-    # Its id may still be cached against a reference clip; drop any stale entry
-    # so the next lookup re-creates or re-finds the right model.
-    for key, value in list(_clone_cache.items()):
-        if value == victim["_id"]:
-            _clone_cache.pop(key, None)
-    return True
+    return False
 
 
 def prune_voice_models(api_key=None, keep: int = None) -> int:
@@ -353,11 +400,11 @@ def prune_voice_models(api_key=None, keep: int = None) -> int:
     about to reuse.
 
     Cloned voices are expensive to rebuild and belong to the user's paid account,
-    so this function now only logs. Deletion still happens lazily inside
-    `ensure_cloned_voice`, and only after Fish has actually refused a create for
-    lack of slots — see `recycle_oldest_voice_model`.
+    so this function only logs. Nothing is deleted here, and
+    `recycle_oldest_voice_model` refuses to delete either: Fish's create limit
+    is tied to API credit, so removing models frees no capacity.
 
-    Returns 0 always (nothing is deleted here).
+    Returns 0 always (nothing is deleted).
     """
     if keep is None:
         keep = int(_load_opt("fish_audio_tts.max_voice_slots", 3) or 3)
@@ -477,8 +524,8 @@ def _wait_until_trained(model_id: str, api_key: str) -> None:
 _name_lock = threading.Lock()
 
 
-def _voice_name(clip: bytes) -> str:
-    """Title for a voice model: `vl_<hash of the reference audio>`.
+def _voice_name(digest: str) -> str:
+    """Title for a voice model: `vl_<content digest of the reference audio>`.
 
     The name is derived from the reference clip itself, so a given title can
     only ever refer to one voice. That is what makes reuse safe: re-running the
@@ -492,7 +539,6 @@ def _voice_name(clip: bytes) -> str:
     so a female speaker could be handed a male speaker's voice from an older run
     (many separate videos all cloned as `vl_231c37b5_*`).
     """
-    digest = hashlib.sha256(clip).hexdigest()[:16]
     return f"{VOICE_NAME_PREFIX}{digest}"
 
 
@@ -521,11 +567,11 @@ def ensure_cloned_voice(ref_wav, api_key=None) -> str:
         if cached:
             return cached
 
-        clip = _prepare_reference_clip(ref_path)
+        clip, digest = _prepare_reference(ref_path)
         # Content-addressed: the title can only match a model built from this
         # very audio, so a match is safe to reuse and a miss cannot collide with
         # another speaker's voice.
-        name = _voice_name(clip)
+        name = _voice_name(digest)
 
         with _name_lock:
             for model in list_voice_models(api_key):
@@ -541,21 +587,25 @@ def ensure_cloned_voice(ref_wav, api_key=None) -> str:
         rprint(f"[cyan]Creating Fish Audio voice model '{name}' from {ref_path.name}...[/cyan]")
         try:
             model_id = _create_voice_model(name, clip, api_key)
-        except Exception as exc:  # noqa: BLE001 - only a full/slot error is retryable
-            # Pre-run pruning (prepare_for_run) should already have made room, so
-            # reaching here means the account is genuinely out of slots. Recycle
-            # the oldest model WE made and try once more; the user's own voices
-            # are never candidates. Anything else is a real error.
-            if not _looks_like_slot_error(exc):
-                raise
-            if not recycle_oldest_voice_model(api_key):
+        except Exception as exc:  # noqa: BLE001
+            # A full Fish allowance is an API-credit limit, NOT a model-count
+            # limit: deleting models lowers the reported "N" without freeing any
+            # capacity. Never delete the user's voices here. Report the real cause
+            # so it can be fixed (top up credit) instead of silently destroying
+            # assets in a loop that cannot succeed.
+            if _looks_like_slot_error(exc):
                 raise Exception(
-                    "Fish Audio has no free voice slots, and this project owns no "
-                    "voice model that can be recycled. Delete unused models at "
-                    f"https://fish.audio/app/my-voices, or raise "
-                    f"fish_audio_tts.max_voice_slots. Original error: {exc}"
+                    "Fish Audio refused to create a cloned voice because the "
+                    "account has reached its API model-creation limit. This is a "
+                    "billing limit tied to API credit, not a shortage of free "
+                    "voice slots: deleting voice models does NOT raise it. "
+                    "Top up API credit at https://fish.audio/app/api-keys , or "
+                    "switch fish_audio_tts.mode to 'dynamic' (which clones from "
+                    "inline reference audio and creates no voice models at all). "
+                    "No voice model was deleted. Original error: "
+                    f"{exc}"
                 ) from exc
-            model_id = _create_voice_model(name, clip, api_key)
+            raise
         # Cache the id BEFORE waiting. The upload already succeeded, so the model
         # exists server-side; if training timed out, a retry must reuse this
         # model rather than create a duplicate (its name is taken, so a second
@@ -656,10 +706,7 @@ def fish_audio_tts(text, save_as, voice_cfg=None):
             {"audio": clip, "text": _reference_text_for(ref_wav)}
         ]
         msgpack = True
-        rprint(
-            f"[yellow]Fish Audio dynamic mode: inlining "
-            f"{len(clip) / 1024:.0f} KB reference per line[/yellow]"
-        )
+        _log_dynamic_reference(ref_wav, clip)
 
     elif mode == "custom":
         # ID cloning: upload once, then send only the model id.
