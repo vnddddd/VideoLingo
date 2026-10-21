@@ -92,6 +92,13 @@ _clone_lock = threading.Lock()
 _reference_logged: set = set()
 _reference_log_lock = threading.Lock()
 
+# Decoding + re-encoding a reference costs ~55 ms. Dynamic mode needs the
+# encoded clip for EVERY line, so without this a 1554-line video spends ~85 s
+# producing byte-identical results. Keyed by (path, mtime_ns, size) so editing
+# a clip invalidates its entry automatically.
+_reference_cache: dict = {}
+_reference_cache_lock = threading.Lock()
+
 # Values shipped in config.example.yaml; treat as "not configured".
 _PLACEHOLDER_KEYS = {"", "YOUR_API_KEY", "YOUR_FISH_API_KEY", "sk-fish-xxxx"}
 
@@ -172,6 +179,29 @@ def _select_best_phrases(seg: AudioSegment, limit_ms: int) -> AudioSegment:
 
 
 def _prepare_reference(ref_wav: Path) -> tuple[bytes, str]:
+    """Cached wrapper around `_encode_reference`.
+
+    Dynamic mode asks for the same reference on every line, so encoding is
+    memoised per file. See `_encode_reference` for what is produced.
+    """
+    try:
+        stat = ref_wav.stat()
+        key = (str(ref_wav.resolve()), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return _encode_reference(ref_wav)
+
+    with _reference_cache_lock:
+        cached = _reference_cache.get(key)
+    if cached is not None:
+        return cached
+
+    result = _encode_reference(ref_wav)
+    with _reference_cache_lock:
+        _reference_cache[key] = result
+    return result
+
+
+def _encode_reference(ref_wav: Path) -> tuple[bytes, str]:
     """Trim a reference clip; return (encoded bytes, content digest).
 
     The digest is taken over canonical PCM, NOT over the bytes actually sent, so
@@ -242,26 +272,93 @@ def _dynamic_reference(voice_cfg, number=None) -> Path:
 def _log_dynamic_reference(ref_wav: Path, clip: bytes) -> None:
     """Announce the inline reference once per clip, not once per line.
 
-    A 1000-line video would otherwise print the same line 1000 times.
+    Dynamic mode re-sends the reference on every request, so its size sets the
+    upload cost. State that cost in terms the user can check against their own
+    uplink instead of leaving them to guess: one line needs clip/latency of
+    bandwidth, and that scales linearly with tts_max_workers.
     """
     with _reference_log_lock:
         if ref_wav in _reference_logged:
             return
         _reference_logged.add(ref_wav)
+
+    kb = len(clip) / 1024
+    try:
+        workers = int(load_key("tts_max_workers"))
+    except Exception:
+        workers = 1
+    # ~2.4 s per call is what this backend measures on s2.1-pro-free.
+    per_worker_mbps = (kb / 2.4) * 8 / 1024
+    peak_mbps = per_worker_mbps * max(1, workers)
     rprint(
-        f"[yellow]Fish Audio dynamic mode: inlining {len(clip) / 1024:.0f} KB "
+        f"[yellow]Fish Audio dynamic mode: inlining {kb:.0f} KB "
         f"({REF_ENCODE_FORMAT} {REF_ENCODE_BITRATE}) reference per line for "
-        f"{ref_wav.name}[/yellow]"
+        f"{ref_wav.name} -- about {per_worker_mbps:.2f} Mbps upstream per worker, "
+        f"~{peak_mbps:.1f} Mbps at tts_max_workers={workers}[/yellow]"
     )
+
+
+def write_reference_transcripts() -> int:
+    """Write refers/{number}.txt for every per-line clip, from the task table.
+
+    Dynamic cloning conditions on (audio, text). Without a matching transcript
+    the model cannot tell what the prompt says and drifts to its default voice,
+    which is how a female line came back male. The subtitle text for each line
+    is already in the audio task workbook, so pair them up here.
+
+    Returns the number of transcripts written (0 if there is nothing to do).
+    """
+    from core.utils.models import _8_1_AUDIO_TASK
+
+    task_file = Path(_8_1_AUDIO_TASK)
+    refers_dir = Path(_AUDIO_REFERS_DIR)
+    if not task_file.exists() or not refers_dir.is_dir():
+        return 0
+
+    try:
+        import pandas as pd
+
+        tasks = pd.read_excel(task_file)
+    except Exception as exc:  # noqa: BLE001 - transcripts are an optimisation
+        rprint(f"[yellow]Fish Audio: could not read the task table for "
+               f"reference transcripts: {exc}[/yellow]")
+        return 0
+
+    written = 0
+    for _, row in tasks.iterrows():
+        try:
+            number = int(row["number"])
+        except Exception:
+            continue
+        text = str(row.get("text") or "").strip()
+        if not text:
+            continue
+        clip = refers_dir / f"{number}.wav"
+        if not clip.exists():
+            continue
+        sidecar = refers_dir / f"{number}.txt"
+        if sidecar.exists():
+            continue
+        try:
+            sidecar.write_text(text, encoding="utf-8")
+            written += 1
+        except Exception:
+            continue
+
+    if written:
+        rprint(f"[cyan]Fish Audio: wrote {written} reference transcript(s) "
+               f"so clones are conditioned on matching text[/cyan]")
+    return written
 
 
 def _reference_text_for(ref_path: Path) -> str:
     """Transcript of the reference clip, used to condition the clone.
 
-    The project keeps the merged long-reference transcript in a sidecar file
-    next to `_long_ref.wav`; per-sentence references have no transcript, and
-    Fish tolerates an approximate one for a short clip, so fall back to a
-    generic line rather than failing the run.
+    This must match the audio. Fish conditions the clone on the pair, so handing
+    a Chinese clip an unrelated English sentence makes it misread the speaker:
+    measured on a 217 Hz female reference, the same request produced a 107 Hz
+    male voice with the mismatched transcript. Per-line clips therefore get the
+    real transcript written next to them by `write_reference_transcripts`.
     """
     sidecar = ref_path.parent / f"{ref_path.stem}.txt"
     if sidecar.exists():
@@ -271,7 +368,10 @@ def _reference_text_for(ref_path: Path) -> str:
                 return text
         except Exception:
             pass
-    return "This is a reference audio sample for voice cloning."
+    # Deliberately empty rather than a placeholder sentence: with no transcript
+    # Fish falls back to inferring the prompt, which is far safer than telling
+    # it the audio says something it does not.
+    return ""
 
 
 # --------------------------------------------------------------------------- #
@@ -470,8 +570,19 @@ def prepare_for_run(api_key=None) -> None:
     2. Drop cached ids whose model no longer exists (deleted in the web studio,
        or pruned by an earlier run), so a stale cache cannot make every line fail.
 
+    It also pairs each per-line reference clip with its transcript before any
+    line is generated: dynamic cloning is conditioned on (audio, text), and a
+    prompt without matching text drifts to the model's default voice.
+
     Every failure is swallowed: housekeeping must never stop a dubbing run.
     """
+    # Independent of the API: write the transcripts first so the very first
+    # generated line already clones from a correctly described prompt.
+    try:
+        write_reference_transcripts()
+    except Exception as exc:  # noqa: BLE001
+        rprint(f"[yellow]Fish Audio: reference transcripts skipped ({exc})[/yellow]")
+
     try:
         api_key = api_key or _load_api_key()
     except Exception as exc:  # noqa: BLE001 - no key yet is the caller's problem

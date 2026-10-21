@@ -302,5 +302,38 @@ class GlobalCloneModelTests(unittest.TestCase):
         self.assertIsNone(self.model(**{"tts_method": "soniox_tts"}))
 
 
+class PhraseSelectionTests(unittest.TestCase):
+    """The speaker reference must not exceed the target it was built for."""
+
+    def _phrases(self, count, each=3.0, gap=1.0):
+        rows = []
+        t = 0.0
+        for i in range(count):
+            rows.append({'start': t, 'end': t + each, 'text': f'word{i}'})
+            t += each + gap
+        return pd.DataFrame(rows)
+
+    def test_never_exceeds_target(self):
+        df = self._phrases(8)
+        for target in (10.0, 15.0, 20.0):
+            picked = preview._collect_clips(df, target, 6)
+            total = sum(end - start for start, end, _ in picked)
+            self.assertLessEqual(
+                total, target,
+                f'reference for target={target}s came out {total:.1f}s',
+            )
+
+    def test_still_fills_the_target(self):
+        df = self._phrases(8)
+        picked = preview._collect_clips(df, 15.0, 6)
+        total = sum(end - start for start, end, _ in picked)
+        self.assertGreaterEqual(total, 10.0, 'selection left the reference far too short')
+
+    def test_stops_at_the_clip_cap(self):
+        df = self._phrases(20)
+        picked = preview._collect_clips(df, 60.0, 4)
+        self.assertLessEqual(len(picked), 4)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

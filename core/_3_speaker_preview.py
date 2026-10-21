@@ -613,8 +613,14 @@ def _collect_clips(
     picked: List[Tuple[float, float, str]] = []
     acc = 0.0
     for ph in phrases_sorted:
+        duration = ph[1] - ph[0]
+        # Never overshoot the target. The reconstructed wav is what Fish Audio
+        # receives as the clone prompt; anything past the cap gets trimmed
+        # later, and by then which audio survives is arbitrary.
+        if picked and acc + duration > total_seconds:
+            break
         picked.append(ph)
-        acc += ph[1] - ph[0]
+        acc += duration
         if acc >= total_seconds or len(picked) >= max_clips:
             break
     picked.sort(key=lambda p: p[0])
