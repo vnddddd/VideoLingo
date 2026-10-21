@@ -235,25 +235,6 @@
     STATE.listeners.push([target, event, handler, options]);
   }
 
-  // Alt+ArrowUp / Alt+ArrowDown move the subtitles. Capture phase so YouTube's
-  // own shortcuts (which use plain arrows for seeking) never see Alt combos.
-  function onSubtitleOffsetKey(event) {
-    if (!event.altKey || event.ctrlKey || event.metaKey) {
-      return;
-    }
-    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") {
-      return;
-    }
-    const target = event.target;
-    const tag = target && target.tagName ? target.tagName.toLowerCase() : "";
-    if (tag === "input" || tag === "textarea" || (target && target.isContentEditable)) {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    nudgeSubtitleOffset(event.key === "ArrowUp" ? SUBTITLE_OFFSET_STEP : -SUBTITLE_OFFSET_STEP);
-  }
-
   function cueAt(time) {
     let low = 0;
     let high = STATE.cues.length - 1;
@@ -452,6 +433,25 @@
       return;
     }
     if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      // Alt+arrows belong to the subtitle offset. This listener runs before
+      // any other window keydown handler and swallows the event, so the
+      // subtitle hotkey has to be handled right here, not in a second
+      // listener (which stopImmediatePropagation would never let through).
+      if (event.altKey && !event.ctrlKey && !event.metaKey) {
+        const tag = event.target && event.target.tagName
+          ? event.target.tagName.toLowerCase()
+          : "";
+        const typing = tag === "input" || tag === "textarea"
+          || (event.target && event.target.isContentEditable);
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (!typing) {
+          nudgeSubtitleOffset(
+            event.key === "ArrowUp" ? SUBTITLE_OFFSET_STEP : -SUBTITLE_OFFSET_STEP
+          );
+        }
+        return;
+      }
       enforceOriginalMuted();
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -623,9 +623,6 @@
     addListener(window, "resize", updatePosition);
     addListener(window, "scroll", updatePosition);
     addListener(window, "keydown", blockYoutubeVolumeKeys, true);
-  // Alt+ArrowUp / Alt+ArrowDown adjust the subtitle height; see
-  // onSubtitleOffsetKey. Registered here so stopCurrentOverlay removes it.
-  addListener(window, "keydown", onSubtitleOffsetKey, true);
 
     STATE.timer = setInterval(() => {
       enforceOriginalMuted();
