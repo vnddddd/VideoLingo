@@ -9,6 +9,16 @@
   const SUPERSEDE_EVENT = "videolingo:supersede-content";
   const DUB_AUDIO_SELECTOR = 'audio[data-videolingo-dub-audio="1"]';
 
+  // Subtitles sit this far above the bottom edge of the player. The player's
+  // own control bar and YouTube's chrome differ in height between videos, so
+  // this is user-adjustable at runtime with Alt+ArrowUp / Alt+ArrowDown and
+  // remembered across page loads.
+  const SUBTITLE_BOTTOM_BASE = 96;
+  const SUBTITLE_OFFSET_STEP = 24;
+  const SUBTITLE_OFFSET_MIN = -160;
+  const SUBTITLE_OFFSET_MAX = 480;
+  const SUBTITLE_OFFSET_KEY = "videolingo.subtitleOffset";
+
   const STATE = {
     active: true,
     jobId: null,
@@ -27,7 +37,8 @@
     lastVideoCheckMs: 0,
     videoStalledSinceMs: null,
     urlWatchTimer: null,
-    lastUrl: location.href
+    lastUrl: location.href,
+    subtitleOffset: readSubtitleOffset()
   };
 
   document.addEventListener(SUPERSEDE_EVENT, (event) => {
@@ -76,6 +87,76 @@
         };
       })
       .filter((cue) => cue && cue.text && cue.end > cue.start);
+  }
+
+  function readSubtitleOffset() {
+    try {
+      const raw = window.localStorage.getItem(SUBTITLE_OFFSET_KEY);
+      const value = Number.parseInt(raw || "0", 10);
+      if (!Number.isFinite(value)) {
+        return 0;
+      }
+      return Math.min(SUBTITLE_OFFSET_MAX, Math.max(SUBTITLE_OFFSET_MIN, value));
+    } catch (error) {
+      return 0;
+    }
+  }
+
+  function writeSubtitleOffset(value) {
+    try {
+      window.localStorage.setItem(SUBTITLE_OFFSET_KEY, String(value));
+    } catch (error) {
+      /* Private mode or storage disabled: the offset still applies this load. */
+    }
+  }
+
+  function nudgeSubtitleOffset(delta) {
+    const next = Math.min(
+      SUBTITLE_OFFSET_MAX,
+      Math.max(SUBTITLE_OFFSET_MIN, STATE.subtitleOffset + delta)
+    );
+    if (next === STATE.subtitleOffset) {
+      return;
+    }
+    STATE.subtitleOffset = next;
+    writeSubtitleOffset(next);
+    updatePosition();
+    showSubtitleHint(next);
+  }
+
+  // Brief confirmation near the player so the new height is obvious without
+  // opening any UI. Reuses the subtitle element's styling conventions.
+  let subtitleHintTimer = null;
+  function showSubtitleHint(offset) {
+    let hint = document.getElementById("videolingo-subtitle-hint");
+    if (!hint) {
+      hint = document.createElement("div");
+      hint.id = "videolingo-subtitle-hint";
+      hint.style.cssText = [
+        "position: fixed",
+        "right: 18px",
+        "top: 18px",
+        "z-index: 2147483647",
+        "padding: 8px 14px",
+        "border-radius: 8px",
+        "background: rgba(0, 0, 0, 0.82)",
+        "color: #fff",
+        'font: 600 14px/1.3 Arial, "Microsoft YaHei", sans-serif',
+        "pointer-events: none",
+        "transition: opacity 0.2s ease",
+        "opacity: 0"
+      ].join(";");
+      document.body.appendChild(hint);
+    }
+    const arrow = offset === 0 ? "" : offset > 0 ? " (更高)" : " (更低)";
+    hint.textContent = `字幕位置 ${offset >= 0 ? "+" : ""}${offset}px${arrow}`;
+    hint.style.opacity = "1";
+    if (subtitleHintTimer) {
+      window.clearTimeout(subtitleHintTimer);
+    }
+    subtitleHintTimer = window.setTimeout(() => {
+      hint.style.opacity = "0";
+    }, 1200);
   }
 
   function ensureStyles() {
@@ -154,6 +235,25 @@
     STATE.listeners.push([target, event, handler, options]);
   }
 
+  // Alt+ArrowUp / Alt+ArrowDown move the subtitles. Capture phase so YouTube's
+  // own shortcuts (which use plain arrows for seeking) never see Alt combos.
+  function onSubtitleOffsetKey(event) {
+    if (!event.altKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") {
+      return;
+    }
+    const target = event.target;
+    const tag = target && target.tagName ? target.tagName.toLowerCase() : "";
+    if (tag === "input" || tag === "textarea" || (target && target.isContentEditable)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    nudgeSubtitleOffset(event.key === "ArrowUp" ? SUBTITLE_OFFSET_STEP : -SUBTITLE_OFFSET_STEP);
+  }
+
   function cueAt(time) {
     let low = 0;
     let high = STATE.cues.length - 1;
@@ -195,7 +295,10 @@
     }
     STATE.subtitleEl.style.left = `${rect.left + rect.width / 2}px`;
     STATE.subtitleEl.style.maxWidth = `${Math.max(220, rect.width * 0.9)}px`;
-    STATE.subtitleEl.style.bottom = `${Math.max(18, window.innerHeight - rect.bottom + 58)}px`;
+    // Distance from the viewport bottom up to the player's bottom edge, plus
+    // the clearance for YouTube's control bar, plus the user's own offset.
+    const clearance = Math.max(18, window.innerHeight - rect.bottom + SUBTITLE_BOTTOM_BASE);
+    STATE.subtitleEl.style.bottom = `${clearance + STATE.subtitleOffset}px`;
   }
 
   function allVideoElements() {
@@ -405,6 +508,12 @@
       STATE.subtitleEl.textContent = "";
       STATE.subtitleEl.style.display = "none";
     }
+    // The offset hint outlives a single overlay, so clear its timer here but
+    // leave the element alone: the next activation reuses it.
+    if (subtitleHintTimer) {
+      window.clearTimeout(subtitleHintTimer);
+      subtitleHintTimer = null;
+    }
     STATE.jobId = null;
     STATE.cues = [];
     STATE.video = null;
@@ -514,6 +623,9 @@
     addListener(window, "resize", updatePosition);
     addListener(window, "scroll", updatePosition);
     addListener(window, "keydown", blockYoutubeVolumeKeys, true);
+  // Alt+ArrowUp / Alt+ArrowDown adjust the subtitle height; see
+  // onSubtitleOffsetKey. Registered here so stopCurrentOverlay removes it.
+  addListener(window, "keydown", onSubtitleOffsetKey, true);
 
     STATE.timer = setInterval(() => {
       enforceOriginalMuted();
