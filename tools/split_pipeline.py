@@ -599,13 +599,11 @@ def _text_and_audio_steps() -> list[tuple[str, Callable[[], object]]]:
             _require_audio_task_columns(["lines", "src_lines"], "Audio chunk generation output")
 
     def reference_audio() -> None:
-        # When demucs is disabled, _9 intentionally skips extraction; do not
-        # force the refers directory to exist in that mode.
-        from core.utils.config_utils import load_key
-
-        if not bool(load_key("demucs")):
-            print("[SKIP] Reference audio extraction: config demucs=false.")
-            return
+        # Extraction reads the raw mix and slices one clip per subtitle line.
+        # _9 handles demucs itself, so disabling demucs must not skip this step:
+        # dynamic (instant) cloning feeds refers/{number}.wav to Fish for every
+        # line, and without those clips every speaker collapses onto the single
+        # long reference.
         if _directory_has_files(AUDIO_REFERS_DIR, "*.wav"):
             print(f"[SKIP] Reference audio extraction: {_display_path(AUDIO_REFERS_DIR)} already contains wav files.")
             return

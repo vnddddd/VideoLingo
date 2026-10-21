@@ -38,7 +38,8 @@
     videoStalledSinceMs: null,
     urlWatchTimer: null,
     lastUrl: location.href,
-    subtitleOffset: readSubtitleOffset()
+    subtitleOffset: readSubtitleOffset(),
+    lastPlayError: null
   };
 
   document.addEventListener(SUPERSEDE_EVENT, (event) => {
@@ -327,8 +328,18 @@
     if (video.paused || video.ended || video.seeking) {
       return true;
     }
+    // Only trust the waiting flag while the video really cannot feed frames.
+    // The flag is set by `waiting`/`stalled` and cleared by `playing`/`canplay`;
+    // those may have fired before activation attached its listeners, which left
+    // the flag stuck on and muted the original while the dub stayed paused.
     if (STATE.videoWaiting) {
-      return true;
+      const ready = video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA;
+      const advancing = !isVideoTimeStalled(video);
+      if (ready && advancing) {
+        STATE.videoWaiting = false;
+      } else {
+        return true;
+      }
     }
     if (video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
       return true;
@@ -375,12 +386,15 @@
 
     try {
       await audio.play();
+      STATE.lastPlayError = null;
       if (shouldPauseDubForVideo(video)) {
         audio.currentTime = video.currentTime || 0;
         pauseAllDubAudios();
       }
-    } catch {
-      // The next play/sync tick will retry after a user gesture.
+    } catch (error) {
+      // The next play/sync tick will retry after a user gesture. Record the
+      // reason so a silent overlay can be diagnosed instead of guessed at.
+      STATE.lastPlayError = error && error.name ? error.name : String(error);
     }
   }
 
