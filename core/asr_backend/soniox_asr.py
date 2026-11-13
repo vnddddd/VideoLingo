@@ -15,7 +15,7 @@ from core.asr_backend.soniox_format import soniox_to_whisper
 # ----------------------------------------
 
 BASE_URL = "https://api.soniox.com"
-MODEL = "stt-async-v4"
+MODEL = "stt-async-v6"
 POLL_INTERVAL_SEC = 2.0
 def _poll_timeout_sec():
     return load_timeout("asr_poll_total", 600)  # 10 min default upper bound for one chunk

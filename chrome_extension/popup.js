@@ -89,8 +89,7 @@ const OPTIONS = {
     ["indextts2", "indextts2"]
   ],
   "soniox_tts.model": [
-    ["tts-rt-v1", "tts-rt-v1（官方正式版，28 音色）"],
-    ["tts-rt-v2", "tts-rt-v2（71 音色，官方文档尚未公布）"]
+    ["tts-rt-v2", "tts-rt-v2（71 音色）"]
   ],
   "soniox_tts.mode": [
     ["preset", "preset - 使用下方预置音色"],

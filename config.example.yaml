@@ -156,8 +156,8 @@ qwen3_tts:
 soniox_tts:
   # Leave empty to reuse whisper.soniox_api_key (same Soniox account).
   api_key: ''
-  # tts-rt-v1 or tts-rt-v2; both accept cloned voices.
-  model: 'tts-rt-v1'
+  # tts-rt-v2 (tts-rt-v1 was retired and now routes to v2); accepts cloned voices.
+  model: 'tts-rt-v2'
   # 'preset' uses the voice below. 'clone' clones the original speaker from
   # output/audio/refers/_long_ref.wav (trimmed to 18s, Soniox rejects >20s) and
   # reuses that voice on later runs. Max 20 cloned voices per organisation.

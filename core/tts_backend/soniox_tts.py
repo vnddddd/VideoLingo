@@ -18,7 +18,7 @@ from core.utils import load_key, except_handler, load_timeout, rprint
 _API_URL = "https://tts-rt.soniox.com/tts"
 _VOICES_API_URL = "https://api.soniox.com/v1/voices"
 _MODELS_API_URL = "https://api.soniox.com/v1/tts-models"
-_DEFAULT_MODEL = "tts-rt-v1"
+_DEFAULT_MODEL = "tts-rt-v2"
 
 # Voice cloning. Processing rejects reference clips over 20s with
 # voice_audio_too_long, and the project's shared _long_ref.wav targets 22s, so
@@ -101,7 +101,7 @@ def list_models(api_key=None) -> list:
     """Every TTS model with its voices, languages and capability flags.
 
     Worth reading rather than hardcoding: the models differ in which built-in
-    voices they offer (tts-rt-v1 has 28, tts-rt-v2 has 71, and six v1 names are
+    voices they offer (the retired tts-rt-v1 had 28, tts-rt-v2 has 71, and six v1 names are
     missing from v2), so a voice picked for one model can be invalid on another.
     """
     api_key = api_key or _load_api_key()

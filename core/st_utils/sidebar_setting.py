@@ -331,7 +331,7 @@ def page_setting():
             options=["local", "cloud", "elevenlabs", "soniox"],
             index=["local", "cloud", "elevenlabs", "soniox"].index(load_key("whisper.runtime")),
             help=t(
-                "Local runtime requires >8GB GPU, cloud runtime requires 302ai API key, elevenlabs runtime requires ElevenLabs API key, soniox runtime requires Soniox API key (stt-async-v4 model)"
+                "Local runtime requires >8GB GPU, cloud runtime requires 302ai API key, elevenlabs runtime requires ElevenLabs API key, soniox runtime requires Soniox API key (stt-async-v6 model)"
             ),
         )
         if runtime != load_key("whisper.runtime"):
@@ -589,18 +589,18 @@ def page_setting():
                 help=t("Leave empty to reuse the Soniox key configured for ASR."),
             )
 
-            soniox_models = ["tts-rt-v1", "tts-rt-v2"]
+            soniox_models = ["tts-rt-v2"]
             try:
                 current_soniox_model = load_key("soniox_tts.model")
             except Exception:
-                current_soniox_model = "tts-rt-v1"
+                current_soniox_model = "tts-rt-v2"
             soniox_model = st.selectbox(
                 t("Soniox Model"),
                 options=soniox_models,
                 index=soniox_models.index(current_soniox_model)
                 if current_soniox_model in soniox_models
                 else 0,
-                help=t("v1 is the officially released model. v2 offers many more voices but is not yet announced in Soniox's docs."),
+                help=t("tts-rt-v1 was retired on Aug 31, 2026; Soniox now routes it to tts-rt-v2."),
             )
             if soniox_model != current_soniox_model:
                 update_key("soniox_tts.model", soniox_model)
