@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local HTTP bridge for the Chrome YouTube overlay extension.
+"""Local HTTP bridge for the Chrome YouTube/Bilibili overlay extension.
 
 The bridge intentionally uses only the Python standard library. It listens on
 127.0.0.1 and runs one VideoLingo job at a time because the upstream pipeline
@@ -250,11 +250,29 @@ def _sanitize_video_id(video_id: str) -> str:
     return clean
 
 
-def _youtube_video_from_url(url: str) -> tuple[str, str, str]:
+def _bilibili_video_from_url(parsed) -> tuple[str, str, str]:
+    query = parse_qs(parsed.query)
+    match = re.match(r"/video/(BV[0-9A-Za-z]{10}|av\d+)", parsed.path, re.IGNORECASE)
+    bvid = match.group(1) if match else (query.get("bvid") or [""])[0]
+    if not re.fullmatch(r"BV[0-9A-Za-z]{10}|av\d+", bvid, re.IGNORECASE):
+        raise ValueError("Could not read a valid Bilibili video id from this URL")
+    try:
+        page = int((query.get("p") or ["1"])[0])
+    except ValueError:
+        page = 1
+    # Each part (?p=N) of a multi-part upload is its own video with its own dub.
+    video_id = f"{bvid}_p{page}" if page > 1 else bvid
+    canonical_url = f"https://www.bilibili.com/video/{bvid}/" + (f"?p={page}" if page > 1 else "")
+    return f"bilibili:{video_id}", video_id, canonical_url
+
+
+def _video_from_url(url: str) -> tuple[str, str, str]:
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
+    if parsed.scheme == "https" and (host == "bilibili.com" or host.endswith(".bilibili.com")):
+        return _bilibili_video_from_url(parsed)
     if parsed.scheme != "https" or not (host == "youtu.be" or host == "youtube.com" or host.endswith(".youtube.com")):
-        raise ValueError("Only YouTube URLs are supported")
+        raise ValueError("Only YouTube and Bilibili URLs are supported")
 
     video_id = ""
     parts = [part for part in parsed.path.split("/") if part]
@@ -941,7 +959,7 @@ def _start_queued_jobs() -> None:
 
 def _lookup_job(url: str) -> tuple[int, dict[str, Any]]:
     try:
-        video_key, video_id, canonical_url = _youtube_video_from_url(url)
+        video_key, video_id, canonical_url = _video_from_url(url)
     except ValueError as exc:
         return 400, {"error": str(exc)}
 
@@ -958,7 +976,7 @@ def _lookup_job(url: str) -> tuple[int, dict[str, Any]]:
 def _start_job(payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     url = str(payload.get("url") or "").strip()
     try:
-        video_key, video_id, canonical_url = _youtube_video_from_url(url)
+        video_key, video_id, canonical_url = _video_from_url(url)
     except ValueError as exc:
         return 400, {"error": str(exc)}
 

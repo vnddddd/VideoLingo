@@ -3,20 +3,41 @@ const POLL_ALARM = "videolingo-poll";
 const CONTENT_PROTOCOL_VERSION = 2;
 const tabDubPrefs = new Map();
 
-function isYouTubeUrl(url) {
+function isYouTubeHost(host) {
+  return host === "youtu.be" || host === "youtube.com" || host.endsWith(".youtube.com");
+}
+
+function isBilibiliHost(host) {
+  return host === "bilibili.com" || host.endsWith(".bilibili.com");
+}
+
+function isSupportedSiteUrl(url) {
   try {
     const host = new URL(url).hostname.toLowerCase();
-    return host === "youtu.be" || host === "youtube.com" || host.endsWith(".youtube.com");
+    return isYouTubeHost(host) || isBilibiliHost(host);
   } catch {
     return false;
   }
+}
+
+function bilibiliVideoIdFromUrl(parsed) {
+  const match = parsed.pathname.match(/^\/video\/(BV[0-9A-Za-z]{10}|av\d+)/i);
+  const bvid = match ? match[1] : parsed.searchParams.get("bvid") || "";
+  if (!/^(BV[0-9A-Za-z]{10}|av\d+)$/i.test(bvid)) {
+    return "";
+  }
+  const page = Number.parseInt(parsed.searchParams.get("p") || "1", 10);
+  return page > 1 ? `${bvid}_p${page}` : bvid;
 }
 
 function videoIdFromUrl(url) {
   try {
     const parsed = new URL(url);
     const host = parsed.hostname.toLowerCase();
-    if (!(host === "youtu.be" || host === "youtube.com" || host.endsWith(".youtube.com"))) {
+    if (isBilibiliHost(host)) {
+      return bilibiliVideoIdFromUrl(parsed);
+    }
+    if (!isYouTubeHost(host)) {
       return "";
     }
 
@@ -36,7 +57,7 @@ function videoIdFromUrl(url) {
   return "";
 }
 
-function isYouTubeVideoUrl(url) {
+function isSupportedVideoUrl(url) {
   return Boolean(videoIdFromUrl(url));
 }
 
@@ -72,14 +93,16 @@ async function activeTab() {
   return tabs[0] || null;
 }
 
-async function getYouTubeCookies() {
-  const urls = [
-    "https://www.youtube.com/",
-    "https://youtube.com/",
-    "https://m.youtube.com/",
-    "https://accounts.google.com/",
-    "https://www.google.com/"
-  ];
+async function getSiteCookies(pageUrl) {
+  const urls = isBilibiliHost(new URL(pageUrl).hostname.toLowerCase())
+    ? ["https://www.bilibili.com/"]
+    : [
+      "https://www.youtube.com/",
+      "https://youtube.com/",
+      "https://m.youtube.com/",
+      "https://accounts.google.com/",
+      "https://www.google.com/"
+    ];
   const byKey = new Map();
   for (const url of urls) {
     const cookies = await chrome.cookies.getAll({ url });
@@ -198,17 +221,17 @@ async function syncTabWithCache(tabId, url) {
   return job;
 }
 
-async function syncActiveYouTubeTabs() {
+async function syncActiveVideoTabs() {
   const tabs = await chrome.tabs.query({ active: true });
   await Promise.allSettled(
     tabs
-      .filter((tab) => tab.id && tab.url && isYouTubeUrl(tab.url))
+      .filter((tab) => tab.id && tab.url && isSupportedSiteUrl(tab.url))
       .map((tab) => syncTabWithCache(tab.id, tab.url))
   );
 }
 
 async function jobForTab(tab) {
-  if (!tab || !tab.url || !isYouTubeVideoUrl(tab.url)) {
+  if (!tab || !tab.url || !isSupportedVideoUrl(tab.url)) {
     return null;
   }
   const lookup = await lookupUrl(tab.url);
@@ -217,11 +240,11 @@ async function jobForTab(tab) {
 
 async function startCurrentTabJob(tabId) {
   const tab = tabId ? await chrome.tabs.get(tabId) : await activeTab();
-  if (!tab || !tab.url || !isYouTubeVideoUrl(tab.url)) {
-    throw new Error("Open a YouTube video tab first");
+  if (!tab || !tab.url || !isSupportedVideoUrl(tab.url)) {
+    throw new Error("Open a YouTube or Bilibili video tab first");
   }
 
-  const cookies = await getYouTubeCookies();
+  const cookies = await getSiteCookies(tab.url);
   const response = await fetch(`${BRIDGE_ORIGIN}/jobs`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -249,7 +272,7 @@ async function startCurrentTabJob(tabId) {
 
 async function pollCurrentTab(tabId) {
   const tab = tabId ? await chrome.tabs.get(tabId) : await activeTab();
-  if (!tab || !tab.url || !isYouTubeVideoUrl(tab.url)) {
+  if (!tab || !tab.url || !isSupportedVideoUrl(tab.url)) {
     return null;
   }
   let job = await jobForTab(tab);
@@ -269,8 +292,8 @@ async function pollCurrentTab(tabId) {
 
 async function toggleCurrentDub(tabId) {
   const tab = tabId ? await chrome.tabs.get(tabId) : await activeTab();
-  if (!tab || !tab.id || !tab.url || !isYouTubeVideoUrl(tab.url)) {
-    throw new Error("Open a YouTube video tab first");
+  if (!tab || !tab.id || !tab.url || !isSupportedVideoUrl(tab.url)) {
+    throw new Error("Open a YouTube or Bilibili video tab first");
   }
   const job = await jobForTab(tab);
   if (!job || job.status !== "done") {
@@ -290,13 +313,13 @@ async function toggleCurrentDub(tabId) {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === POLL_ALARM) {
-    syncActiveYouTubeTabs().catch(() => {});
+    syncActiveVideoTabs().catch(() => {});
   }
 });
 
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   chrome.tabs.get(tabId).then((tab) => {
-    if (tab.url && isYouTubeUrl(tab.url)) {
+    if (tab.url && isSupportedSiteUrl(tab.url)) {
       syncTabWithCache(tabId, tab.url).catch(() => {});
     }
   }).catch(() => {});
@@ -307,7 +330,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === "loading") {
     clearTabPreference(tabId);
   }
-  if ((changeInfo.url || changeInfo.status === "complete") && isYouTubeUrl(url)) {
+  if ((changeInfo.url || changeInfo.status === "complete") && isSupportedSiteUrl(url)) {
     syncTabWithCache(tabId, url).catch(() => {});
   }
 });
@@ -335,7 +358,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const tab = await activeTab();
       let job = null;
       let playbackMode = "none";
-      if (tab && tab.url && isYouTubeVideoUrl(tab.url)) {
+      if (tab && tab.url && isSupportedVideoUrl(tab.url)) {
         job = await jobForTab(tab).catch(() => null);
         if (job && job.status === "done") {
           playbackMode = isDubDisabledForTab(tab.id, videoIdFromUrl(tab.url)) ? "original" : "dub";

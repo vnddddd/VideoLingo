@@ -52,7 +52,11 @@
   }));
 
   function findVideo() {
-    return document.querySelector("video.html5-main-video") || document.querySelector("video");
+    // Bilibili pages also carry small hover-preview <video>s in the
+    // recommendation list, so the main player has to be picked explicitly.
+    return document.querySelector("video.html5-main-video")
+      || document.querySelector(".bpx-player-video-wrap video, .bpx-player-video-wrap bwp-video")
+      || document.querySelector("video");
   }
 
   function parseTime(value) {
@@ -147,8 +151,8 @@
         "transition: opacity 0.2s ease",
         "opacity: 0"
       ].join(";");
-      document.body.appendChild(hint);
     }
+    attachToOverlayHost(hint);
     const arrow = offset === 0 ? "" : offset > 0 ? " (更高)" : " (更低)";
     hint.textContent = `字幕位置 ${offset >= 0 ? "+" : ""}${offset}px${arrow}`;
     hint.style.opacity = "1";
@@ -267,10 +271,26 @@
     }
   }
 
+  // Only the fullscreen element's subtree is painted while a page is in
+  // fullscreen. Bilibili fullscreens its player container, so overlays hung
+  // off <body> vanish; they have to live inside that container meanwhile.
+  function overlayHost() {
+    const fullscreen = document.fullscreenElement;
+    return fullscreen && fullscreen.tagName !== "VIDEO" ? fullscreen : document.body;
+  }
+
+  function attachToOverlayHost(el) {
+    const host = overlayHost();
+    if (el && el.parentNode !== host) {
+      host.appendChild(el);
+    }
+  }
+
   function updatePosition() {
     if (!STATE.video || !STATE.subtitleEl) {
       return;
     }
+    attachToOverlayHost(STATE.subtitleEl);
     const rect = STATE.video.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) {
       return;
@@ -398,21 +418,23 @@
     }
   }
 
+  // Silencing the original must never touch `video.volume`, only `muted`.
+  // Bilibili's player mirrors the <video> element's volume into
+  // `bpx_player_profile.media.volume` in localStorage, the value every later
+  // video restores as its starting volume. Forcing the element to 0 (and later
+  // writing a snapshot back) corrupted that record, so new Bilibili videos
+  // opened at whatever fraction was written instead of 100%.
   function enforceOriginalMuted() {
     for (const video of allVideoElements()) {
       if (!STATE.originalVideoStates.has(video)) {
         STATE.originalVideoStates.set(video, {
           muted: video.muted,
-          volume: video.volume,
           defaultMuted: video.defaultMuted,
           hadMutedAttribute: video.hasAttribute("muted")
         });
       }
       if (!video.muted) {
         video.muted = true;
-      }
-      if (video.volume !== 0) {
-        video.volume = 0;
       }
       video.defaultMuted = true;
       video.setAttribute("muted", "");
@@ -423,7 +445,6 @@
     for (const [video, state] of STATE.originalVideoStates.entries()) {
       try {
         video.muted = state.muted;
-        video.volume = state.volume;
         video.defaultMuted = state.defaultMuted;
         if (state.hadMutedAttribute) {
           video.setAttribute("muted", "");
@@ -570,7 +591,7 @@
     }
     const video = findVideo();
     if (!video) {
-      throw new Error("No YouTube video element found");
+      throw new Error("No video element found");
     }
 
     if (STATE.jobId === message.jobId && STATE.audio && STATE.video === video) {
@@ -636,6 +657,7 @@
     addListener(document, "volumechange", enforceOriginalMutedOnMediaEvent, true);
     addListener(window, "resize", updatePosition);
     addListener(window, "scroll", updatePosition);
+    addListener(document, "fullscreenchange", updatePosition);
     addListener(window, "keydown", blockYoutubeVolumeKeys, true);
 
     STATE.timer = setInterval(() => {

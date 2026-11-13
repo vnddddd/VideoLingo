@@ -302,20 +302,41 @@ function send(message) {
   return chrome.runtime.sendMessage(message);
 }
 
-function isYouTubeUrl(url) {
+function isYouTubeHost(host) {
+  return host === "youtu.be" || host === "youtube.com" || host.endsWith(".youtube.com");
+}
+
+function isBilibiliHost(host) {
+  return host === "bilibili.com" || host.endsWith(".bilibili.com");
+}
+
+function isSupportedSiteUrl(url) {
   try {
     const host = new URL(url).hostname.toLowerCase();
-    return host === "youtu.be" || host === "youtube.com" || host.endsWith(".youtube.com");
+    return isYouTubeHost(host) || isBilibiliHost(host);
   } catch {
     return false;
   }
+}
+
+function bilibiliVideoIdFromUrl(parsed) {
+  const match = parsed.pathname.match(/^\/video\/(BV[0-9A-Za-z]{10}|av\d+)/i);
+  const bvid = match ? match[1] : parsed.searchParams.get("bvid") || "";
+  if (!/^(BV[0-9A-Za-z]{10}|av\d+)$/i.test(bvid)) {
+    return "";
+  }
+  const page = Number.parseInt(parsed.searchParams.get("p") || "1", 10);
+  return page > 1 ? `${bvid}_p${page}` : bvid;
 }
 
 function videoIdFromUrl(url) {
   try {
     const parsed = new URL(url);
     const host = parsed.hostname.toLowerCase();
-    if (!(host === "youtu.be" || host === "youtube.com" || host.endsWith(".youtube.com"))) {
+    if (isBilibiliHost(host)) {
+      return bilibiliVideoIdFromUrl(parsed);
+    }
+    if (!isYouTubeHost(host)) {
       return "";
     }
 
@@ -335,7 +356,7 @@ function videoIdFromUrl(url) {
   return "";
 }
 
-function isYouTubeVideoUrl(url) {
+function isSupportedVideoUrl(url) {
   return Boolean(videoIdFromUrl(url));
 }
 
@@ -389,15 +410,15 @@ function phaseLabel(job, playbackMode = "none") {
 
 function renderState(tab, job, playbackMode = "none") {
   activeTabId = tab?.id || null;
-  const isYoutube = Boolean(tab?.url && isYouTubeUrl(tab.url));
-  const isVideo = Boolean(tab?.url && isYouTubeVideoUrl(tab.url));
-  videoTitleEl.textContent = isYoutube ? (tab.title || "YouTube 视频") : "未检测到 YouTube 视频";
-  videoUrlEl.textContent = isYoutube ? tab.url : "";
+  const isSite = Boolean(tab?.url && isSupportedSiteUrl(tab.url));
+  const isVideo = Boolean(tab?.url && isSupportedVideoUrl(tab.url));
+  videoTitleEl.textContent = isSite ? (tab.title || "视频") : "未检测到 YouTube / B站 视频";
+  videoUrlEl.textContent = isSite ? tab.url : "";
 
   startButton.disabled = !isVideo || (job && ["queued", "running", "waiting_speaker"].includes(job.status));
   overlayButton.disabled = !(job && job.status === "done" && isVideo);
   overlayButton.textContent = playbackMode === "original" ? "使用配音" : "使用原声";
-  setStatus(isVideo ? phaseLabel(job, playbackMode) : "请先打开一个 YouTube 视频。");
+  setStatus(isVideo ? phaseLabel(job, playbackMode) : "请先打开一个 YouTube 或 B站 视频。");
 }
 
 function configControls() {
@@ -907,7 +928,7 @@ async function refresh() {
 
 startButton.addEventListener("click", async () => {
   startButton.disabled = true;
-  setStatus("正在把 YouTube 链接和 Cookie 发送给本地服务...");
+  setStatus("正在把视频链接和 Cookie 发送给本地服务...");
   try {
     const result = await send({
       type: "VIDEOLINGO_START_CURRENT_TAB",
