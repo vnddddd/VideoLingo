@@ -1,5 +1,10 @@
+import json
 import os
 import re
+import threading
+import time
+from pathlib import Path
+
 from pydub import AudioSegment
 
 from core.asr_backend.audio_preprocess import get_audio_duration
@@ -37,6 +42,89 @@ TTS_RESCAN_BAD_ON_RESUME = True
 
 # Lazy-initialized singleton (loading g2p_en is slow)
 _TTS_ESTIMATOR = None
+
+
+class BadTTSAudioError(Exception):
+    """The backend kept returning audio far longer than the line can hold.
+
+    Raised only after every retry (and the LLM text rewrite) has failed AND the
+    leading speech could not be salvaged. Callers must not silently substitute
+    silence: a lost line is a lost translation, which is worse than a clear
+    failure the user can act on.
+    """
+
+
+# Every line that could not be voiced cleanly, written to output/log so the run
+# can be audited afterwards instead of relying on the user reading a long log.
+_BAD_TTS_REPORT = "output/log/tts_failures.jsonl"
+_report_lock = threading.Lock()
+
+
+def report_bad_tts(save_as: str, text: str, kept: float, produced: float, action: str) -> None:
+    """Append one unvoiced/degraded line to the run's failure report."""
+    record = {
+        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "file": str(save_as),
+        "text": text,
+        "expected_vs_produced_s": [round(kept, 2), round(produced, 2)],
+        "action": action,
+    }
+    try:
+        path = Path(_BAD_TTS_REPORT)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _report_lock, path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _salvage_leading_speech(save_as: str, limit_s: float) -> float | None:
+    """Keep only the first run of speech from a looping TTS output.
+
+    Duration checks alone cannot tell a hallucination from a genuinely long
+    line, but a loop leaves a telltale shape: several separate speech segments
+    where the first one already covers the requested words. Cut after that
+    first utterance and return its length, or None when even the first segment
+    is longer than the line can hold.
+    """
+    try:
+        import torch
+        from silero_vad import get_speech_timestamps
+
+        from core.tts_backend.tts_vad import _audiosegment_to_vad_samples, _get_tts_vad_model
+
+        audio = AudioSegment.from_wav(save_as)
+        samples = _audiosegment_to_vad_samples(audio)
+        if samples.size == 0:
+            return None
+        with _vad_lock_tts():
+            model = _get_tts_vad_model()
+            segs = get_speech_timestamps(
+                torch.from_numpy(samples).float(),
+                model,
+                sampling_rate=16000,
+                min_speech_duration_ms=80,
+                return_seconds=True,
+            )
+        if len(segs) < 2:
+            return None
+        first_end_ms = int(round(float(segs[0]["end"]) * 1000))
+        first_end_ms = min(len(audio), first_end_ms + 100)
+        clipped = audio[:first_end_ms]
+        kept = len(clipped) / 1000.0
+        if kept <= 0 or kept > limit_s:
+            return None
+        clipped.export(save_as, format="wav")
+        return kept
+    except Exception:
+        return None
+
+
+def _vad_lock_tts():
+    """The shared silero model must not be run concurrently."""
+    from core.tts_backend import tts_vad
+
+    return tts_vad._vad_lock
 
 
 def clean_text_for_tts(text):
@@ -214,12 +302,33 @@ def tts_main(text, save_as, number, task_df, speaker_id=None, speed=None):
                 if fallback_blob is not None:
                     with open(save_as, 'wb') as fb:
                         fb.write(fallback_blob)
-                rprint(f"[red][BadTTS] gave up after {max_retries} attempts; using shortest fallback ({fallback_dur:.2f}s vs expected {expected_dur:.2f}s) for {save_as}[/red]")
-                # The bad/fallback decision is complete; apply the same final
-                # VAD post-trim as normal successful outputs before returning.
                 ensure_non_empty_wav(save_as)
                 vad_compact_tts_audio(save_as)
                 ensure_non_empty_wav(save_as)
+                # A hallucinated 20-40 s clip is usually a loop: the FIRST
+                # utterance is still the requested words and the rest is the
+                # model repeating itself. Keep the leading speech, drop the
+                # loop, and say so loudly, instead of losing the line or
+                # poisoning the chunk timeline.
+                fallback_after_vad = get_audio_duration(save_as)
+                if fallback_after_vad > bad_threshold:
+                    salvaged = _salvage_leading_speech(save_as, bad_threshold)
+                    if salvaged is not None:
+                        rprint(
+                            f"[yellow][BadTTS-SALVAGED] kept {salvaged:.2f}s of the leading "
+                            f"speech from a {fallback_after_vad:.2f}s repeated output for "
+                            f"{save_as} -- the tail was the model looping; check this line "
+                            f"by ear: {text[:60]}[/yellow]"
+                        )
+                        report_bad_tts(save_as, text, salvaged, fallback_after_vad, "salvaged")
+                        return
+                    report_bad_tts(save_as, text, 0.0, fallback_after_vad, "dropped")
+                    raise BadTTSAudioError(
+                        f"TTS produced {fallback_after_vad:.2f}s for a line expected to "
+                        f"take {expected_dur:.2f}s after {max_retries} attempts and the "
+                        f"leading speech could not be salvaged: {text[:60]}"
+                    )
+                rprint(f"[red][BadTTS] gave up after {max_retries} attempts; using shortest fallback ({fallback_dur:.2f}s vs expected {expected_dur:.2f}s) for {save_as}[/red]")
                 return
 
             # Bad-quality detection passed on raw audio. Now apply the final
@@ -229,6 +338,10 @@ def tts_main(text, save_as, number, task_df, speaker_id=None, speed=None):
             vad_compact_tts_audio(save_as)
             ensure_non_empty_wav(save_as)
             return
+        except BadTTSAudioError:
+            # Already retried and text-rewritten inside the loop; retrying again
+            # would only burn more API calls on a line the model cannot speak.
+            raise
         except Exception as e:
             if attempt == max_retries - 1:
                 raise Exception(f"Failed to generate audio after {max_retries} attempts: {str(e)}")

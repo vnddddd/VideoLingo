@@ -27,18 +27,43 @@ def _poll_timeout_sec():
 def _auth_headers(api_key):
     return {"Authorization": f"Bearer {api_key}"}
 
+_UPLOAD_RETRIES = 5
+
+
 def _upload_file(api_key, audio_path):
-    """POST /v1/files -> {id, ...}"""
-    with open(audio_path, "rb") as fp:
-        files = {"file": (os.path.basename(audio_path), fp, "audio/mpeg")}
-        r = requests.post(
-            f"{BASE_URL}/v1/files",
-            headers=_auth_headers(api_key),
-            files=files,
-            timeout=load_timeout("asr_upload", 180),
-        )
-    r.raise_for_status()
-    return r.json()["id"]
+    """POST /v1/files -> {id, ...}
+
+    The audio for a long video is one multi-megabyte body, and an unstable proxy
+    drops a noticeable share of those connections (measured here: 2 of 5 uploads
+    failed with SSLEOFError). A single attempt therefore failed the whole run at
+    the ASR step. Retry the body upload before giving up.
+    """
+    last_error = None
+    for attempt in range(_UPLOAD_RETRIES):
+        try:
+            with open(audio_path, "rb") as fp:
+                files = {"file": (os.path.basename(audio_path), fp, "audio/mpeg")}
+                r = requests.post(
+                    f"{BASE_URL}/v1/files",
+                    headers=_auth_headers(api_key),
+                    files=files,
+                    timeout=load_timeout("asr_upload", 180),
+                )
+            r.raise_for_status()
+            return r.json()["id"]
+        except (requests.exceptions.SSLError, requests.exceptions.ConnectionError) as exc:
+            last_error = exc
+            if attempt == _UPLOAD_RETRIES - 1:
+                break
+            wait = min(2 ** attempt, 15)
+            rprint(
+                f"[yellow]Soniox upload interrupted ({type(exc).__name__}); "
+                f"retry {attempt + 1}/{_UPLOAD_RETRIES - 1} in {wait}s[/yellow]"
+            )
+            time.sleep(wait)
+    raise RuntimeError(
+        f"Soniox file upload failed after {_UPLOAD_RETRIES} attempts: {last_error}"
+    ) from last_error
 
 def _create_transcription(api_key, file_id, language=None, diarize=False):
     """POST /v1/transcriptions -> {id, status, ...}"""

@@ -160,6 +160,12 @@ def process_transcription(result: Dict) -> pd.DataFrame:
 def save_results(df: pd.DataFrame):
     os.makedirs('output/log', exist_ok=True)
 
+    if df.empty or 'text' not in df.columns:
+        raise ValueError(
+            "ASR returned no speech at all. Check output/audio/raw.mp3 - "
+            "the source video is probably silent or has no speech."
+        )
+
     # Remove rows where 'text' is empty
     initial_rows = len(df)
     df = df[df['text'].str.len() > 0]

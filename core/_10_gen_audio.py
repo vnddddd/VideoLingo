@@ -18,7 +18,7 @@ from core.utils import *
 from core.utils.models import *
 from core.asr_backend.audio_preprocess import get_audio_duration
 from core.prompts import get_subtitle_trim_prompt
-from core.tts_backend.tts_main import tts_main
+from core.tts_backend.tts_main import BadTTSAudioError, tts_main
 
 console = Console()
 
@@ -26,6 +26,9 @@ TEMP_FILE_TEMPLATE = f"{_AUDIO_TMP_DIR}/{{}}_temp.wav"
 OUTPUT_FILE_TEMPLATE = f"{_AUDIO_SEGS_DIR}/{{}}.wav"
 WARMUP_SIZE = 5
 SAFE_TIMELINE_OVERRUN_SECONDS = 1.0
+# Length of the silent clip that replaces a line whose TTS never came back at a
+# speakable length. Kept at the minimum segment so the chunk still fits.
+BAD_TTS_FALLBACK_MS = 300
 from core.tts_backend.tts_vad import (
     MIN_SEGMENT_DURATION_MS,
     ensure_non_empty_wav as _ensure_non_empty_wav,
@@ -398,6 +401,40 @@ def fit_or_shorten_line(
     return get_audio_duration(output_file)
 
 
+# Lines that never got usable audio, surfaced at the end of the run instead of
+# being buried in a 100k-line log.
+_UNVOICED_LINES: list[tuple] = []
+_unvoiced_lock = threading.Lock()
+
+
+def _write_fallback_silence(path: str) -> None:
+    """Hold the cue's slot on the timeline when no audio could be produced."""
+    segment = AudioSegment.silent(duration=BAD_TTS_FALLBACK_MS)
+    segment.set_frame_rate(16000).set_channels(1).set_sample_width(2).export(path, format="wav")
+
+
+def _record_unvoiced(number, line_index, text, exc) -> None:
+    with _unvoiced_lock:
+        _UNVOICED_LINES.append((number, line_index, text, str(exc)))
+
+
+def print_unvoiced_summary() -> None:
+    """Print the unvoiced lines once, so a defect cannot hide behind a long run."""
+    with _unvoiced_lock:
+        rows = list(_UNVOICED_LINES)
+    if not rows:
+        return
+    body = "\n".join(
+        f"  {number}_{line_index}  {text[:60]}" for number, line_index, text, _ in rows
+    )
+    rprint(
+        f"[bold red]\n{len(rows)} line(s) could NOT be dubbed. They keep their "
+        f"subtitle but play no voice:\n{body}\n"
+        f"Full report: output/log/tts_failures.jsonl\n"
+        f"Re-run to retry just these lines, or split the subtitle before dubbing.[/bold red]"
+    )
+
+
 def process_row(row: pd.Series, tasks_df: pd.DataFrame) -> Tuple[int, float]:
     """Helper function for processing single row data"""
     number = row['number']
@@ -409,7 +446,20 @@ def process_row(row: pd.Series, tasks_df: pd.DataFrame) -> Tuple[int, float]:
     real_dur = 0
     for line_index, line in enumerate(lines):
         temp_file = TEMP_FILE_TEMPLATE.format(f"{number}_{line_index}")
-        tts_main(line, temp_file, number, tasks_df, speaker_id=speaker_id)
+        try:
+            tts_main(line, temp_file, number, tasks_df, speaker_id=speaker_id)
+        except BadTTSAudioError as exc:
+            # Nothing intelligible came back and even the leading speech could
+            # not be salvaged. Keep the cue on the timeline (so timings stay
+            # aligned) but record it loudly: an unvoiced line is a real defect
+            # the user must see, never a silent, invisible substitution.
+            rprint(
+                f"[bold red][UNVOICED LINE] {number}_{line_index} has no usable audio "
+                f"({exc}); its subtitle stays on screen but is NOT dubbed. "
+                f"Listed in output/log/tts_failures.jsonl[/bold red]"
+            )
+            _write_fallback_silence(temp_file)
+            _record_unvoiced(number, line_index, str(line), exc)
         # tts_main applies the mandatory silero-vad post-trim only after
         # raw-output BadTTS duration/retry/fallback decisions have completed.
         # The duration recorded here is the post-VAD duration used by merge_chunks
@@ -768,6 +818,9 @@ def gen_audio() -> None:
     # Step4: Merge audio chunks
     tasks_df = merge_chunks(tasks_df)
     
+    # Surface any line that never got audible speech before the run reports success.
+    print_unvoiced_summary()
+
     # Step4b: Normalize numpy scalars to builtin Python types before writing xlsx.
     # numpy 2.x repr of np.float64(x) is "np.float64(x)" (not plain "x"), which
     # breaks eval(cell) in _11_merge_audio.py if numpy is not imported there.

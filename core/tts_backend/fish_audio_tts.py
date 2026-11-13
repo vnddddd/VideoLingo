@@ -330,7 +330,13 @@ def write_reference_transcripts() -> int:
             number = int(row["number"])
         except Exception:
             continue
-        text = str(row.get("text") or "").strip()
+        # The clip in refers/{number}.wav is sliced from the SOURCE audio, so it
+        # says what the speaker originally said. The "text" column holds the
+        # TRANSLATION, which is a different language entirely -- pairing the two
+        # tells Fish the audio says something it does not, and the clone drifts
+        # (measured: a Chinese transcript on an English clip returned a male
+        # voice for a female speaker). "origin" is the transcript of that audio.
+        text = str(row.get("origin") or "").strip()
         if not text:
             continue
         clip = refers_dir / f"{number}.wav"
@@ -338,6 +344,21 @@ def write_reference_transcripts() -> int:
             continue
         sidecar = refers_dir / f"{number}.txt"
         if sidecar.exists():
+            existing = ""
+            try:
+                existing = sidecar.read_text(encoding="utf-8").strip()
+            except Exception:
+                pass
+            # Rewrite a sidecar written by an older run that used the translation.
+            translated = str(row.get("text") or "").strip()
+            if existing and existing != translated:
+                continue
+            if existing and existing == translated:
+                try:
+                    sidecar.write_text(text, encoding="utf-8")
+                    written += 1
+                except Exception:
+                    pass
             continue
         try:
             sidecar.write_text(text, encoding="utf-8")
