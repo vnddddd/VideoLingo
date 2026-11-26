@@ -14,14 +14,27 @@ def sanitize_filename(filename):
 
 def update_ytdlp():
     try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"])
-        if 'yt_dlp' in sys.modules:
-            del sys.modules['yt_dlp']
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp", "yt-dlp-ejs"])
+        for name in list(sys.modules):
+            if name in ('yt_dlp', 'yt_dlp_ejs') or name.startswith(('yt_dlp.', 'yt_dlp_ejs.')):
+                del sys.modules[name]
         rprint("[green]yt-dlp updated[/green]")
     except subprocess.CalledProcessError as e:
-        rprint("[yellow]Warning: Failed to update yt-dlp: {e}[/yellow]")
+        rprint(f"[yellow]Warning: Failed to update yt-dlp: {e}[/yellow]")
     from yt_dlp import YoutubeDL
     return YoutubeDL
+
+
+def _apply_youtube_compatibility(ydl_opts):
+    from yt_dlp.version import __version__
+    from yt_dlp.utils import version_tuple
+
+    # Python 3.10 cannot install the fixed release (2026.11.23+). Older
+    # solvers fail on players such as b485e332; use the upstream workaround:
+    # https://github.com/yt-dlp/yt-dlp/issues/18123
+    if version_tuple(__version__) < (2026, 11, 23):
+        youtube = ydl_opts.setdefault('extractor_args', {}).setdefault('youtube', {})
+        youtube.setdefault('player_js_variant', ['tv'])
 
 def _apply_cookie_file(ydl_opts, cookies_path=None):
     if cookies_path is None:
@@ -75,6 +88,7 @@ def download_video_ytdlp(url, save_path='output', resolution='1080'):
 
     # Get YoutubeDL class after updating
     YoutubeDL = update_ytdlp()
+    _apply_youtube_compatibility(ydl_opts)
     with YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
     
@@ -105,6 +119,7 @@ def download_audio_ytdlp(url, save_path='output', cookies_path=None):
     _apply_cookie_file(ydl_opts, cookies_path=cookies_path)
 
     YoutubeDL = update_ytdlp()
+    _apply_youtube_compatibility(ydl_opts)
     before = set(os.listdir(audio_dir))
     with YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
